@@ -18,6 +18,21 @@ AgentLibrary
 `ResolvedAgentConfig` 中的文件路径和 workspace 路径只作为运行时临时配置输出，不写回
 `agent.yaml`。
 
+## 当前文件划分
+
+当前实现仍属于主 macOS app target 内的 `AgentMac/AgentLibrary/` 文件夹，不是独立 package
+或独立 Xcode target。文件按职责拆分：
+
+- `AgentModels.swift`：定义 `PermissionDecision`、`ModelConfig`、`PermissionConfig`、
+  `AgentManifest`、`AgentSummary`、`Agent` 和 `ResolvedAgentConfig`。
+- `AgentErrors.swift`：定义 `AgentValidationError` 和 `AgentLibraryError`。
+- `AgentManifestYAMLCodec.swift`：负责第一版 `agent.yaml` 使用的最小 YAML 编解码。
+- `AgentLibrary.swift`：实现 Agent 创建、加载、保存、校验、路径解析和
+  `ResolvedAgentConfig` 生成。
+
+拆分后的文件边界只用于降低单文件复杂度，不改变模块职责。`AgentLibrary` 仍然负责组合 Agent
+配置和共享资源引用，不负责维护共享资源内容，也不启动 Session 或 Runtime。
+
 ## 需要开发的功能
 
 ### Agent 创建

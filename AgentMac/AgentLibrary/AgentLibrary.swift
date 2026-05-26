@@ -3,8 +3,8 @@ import Foundation
 /// Agent 定义的文件型应用服务。
 ///
 /// `AgentLibrary` 负责创建、加载、保存和校验 Agent，并把持久化相对路径解析为运行时需要的
-/// `ResolvedAgentConfig`。它只依赖 `FileStore` 的文件边界，不依赖 SwiftUI、TCA、Session、
-/// RuntimeBridge、RuntimeHost 或 Approval。
+/// `ResolvedAgentConfig`。它通过 `FileStore` 访问磁盘，并沿用 `ResourceLibrary` 的资源分类，
+/// 不依赖 SwiftUI、TCA、Session、RuntimeBridge、RuntimeHost 或 Approval。
 nonisolated struct AgentLibrary {
     /// Agent 目录集合。
     private static let agentsDirectory = "agents"
@@ -519,4 +519,3 @@ nonisolated struct AgentLibrary {
         "\(agentDirectoryPath(id: id))/\(Self.manifestFileName)"
     }
 }
-

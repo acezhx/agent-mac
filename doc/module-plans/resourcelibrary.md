@@ -14,6 +14,22 @@ ResourceLibrary
 
 `ResourceLibrary` 通过 `FileStore` 访问文件系统，不直接处理底层路径安全细节。
 
+## 当前文件划分
+
+当前实现仍属于主 macOS app target 内的 `AgentMac/ResourceLibrary/` 文件夹，不是独立
+package 或独立 Xcode target。文件按资源类型拆分：
+
+- `ResourceModels.swift`：定义 `ResourceKind`、资源校验错误、校验结果和
+  `KnowledgeResource`、`SkillResource`、`ToolResource`。
+- `ResourceLibrary.swift`：定义 `ResourceLibrary` 服务入口、共享目录常量、资源 ID 校验和
+  路径构造 helper。
+- `ResourceLibrary+Knowledge.swift`：维护 knowledge 文件的列表、创建、读取、保存和文件名校验。
+- `ResourceLibrary+Skill.swift`：维护 skill 目录、`SKILL.md` 读写和最小结构校验。
+- `ResourceLibrary+Tool.swift`：维护 tool 目录、`tool.yaml`、入口文件读写和最小结构校验。
+
+拆分后的文件边界只用于降低单文件复杂度，不改变模块依赖关系。`ResourceLibrary` 仍然只通过
+`FileStore` 访问磁盘，不依赖 Agent、Session、Runtime 或 UI。
+
 ## 需要开发的功能
 
 ### Knowledge 管理

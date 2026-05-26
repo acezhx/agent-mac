@@ -310,7 +310,17 @@ AgentMac/
 - 启动 Node 或 Pi。
 - 执行工具。
 
-`AgentLibrary` 可以向 `ResourceLibrary` 查询可用资源，并使用 `FileStore` 访问磁盘。
+`AgentLibrary` 使用 `FileStore` 访问磁盘，并沿用 `ResourceLibrary` 拥有的资源分类和最小结构
+规则。共享资源的独立维护和可选列表由 `ResourceLibrary` 提供；`AgentLibrary` 只保存引用并
+在校验时检查这些引用能否
+解析到有效文件结构。
+
+当前文件划分：
+
+- `AgentModels.swift`：Agent manifest、编辑模型、权限和运行时配置类型。
+- `AgentErrors.swift`：Agent 校验和服务错误。
+- `AgentManifestYAMLCodec.swift`：第一版 `agent.yaml` 最小 YAML 编解码。
+- `AgentLibrary.swift`：Agent 服务入口、路径解析和校验流程。
 
 ### ResourceLibrary
 
@@ -343,6 +353,14 @@ MVP 资源规则：
 - 存储资源版本或发布状态。
 
 `ResourceLibrary` 让资源可以独立维护。`AgentLibrary` 负责将这些资源组合进 Agent。
+
+当前文件划分：
+
+- `ResourceModels.swift`：资源类型、资源描述和校验结果。
+- `ResourceLibrary.swift`：资源服务入口、共享目录常量、ID 校验和路径 helper。
+- `ResourceLibrary+Knowledge.swift`：knowledge 文件维护。
+- `ResourceLibrary+Skill.swift`：skill 目录和 `SKILL.md` 维护。
+- `ResourceLibrary+Tool.swift`：tool 目录、`tool.yaml` 和入口文件维护。
 
 ### Session
 
