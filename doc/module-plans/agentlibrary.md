@@ -13,7 +13,10 @@ AgentLibrary
   -> ResourceLibrary
 ```
 
-`AgentLibrary` 使用 `FileStore` 读写 Agent 文件，使用 `ResourceLibrary` 校验共享资源。
+`AgentLibrary` 使用 `FileStore` 读写 Agent 文件，并按 `ResourceLibrary` 的最小结构规则校验
+共享资源引用。
+`ResolvedAgentConfig` 中的文件路径和 workspace 路径只作为运行时临时配置输出，不写回
+`agent.yaml`。
 
 ## 需要开发的功能
 
@@ -44,6 +47,7 @@ AgentLibrary
 - 保存 selected skills。
 - 保存 selected tools。
 - 保存 `system.md` 内容。
+- 保存已有 Agent 时不允许通过修改 `id` 隐式重命名或复制 Agent。
 
 ### Agent 校验
 
@@ -69,27 +73,28 @@ AgentLibrary
   - selected tools 绝对路径。
   - model 配置。
   - permissions 配置。
+  - workspace 绝对路径。
 
 ## Checklist
 
-- [ ] 创建 `AgentMac/AgentLibrary/` 目录。
-- [ ] 定义 `AgentManifest`。
-- [ ] 定义 `ModelConfig`。
-- [ ] 定义 `PermissionConfig`。
-- [ ] 定义 `ResolvedAgentConfig`。
-- [ ] 定义 `AgentValidationError`。
-- [ ] 实现 Agent ID 校验。
-- [ ] 实现 Agent 创建。
-- [ ] 实现默认 `agent.yaml` 生成。
-- [ ] 实现默认 `system.md` 生成。
-- [ ] 实现 Agent 列表加载。
-- [ ] 实现单个 Agent 加载。
-- [ ] 实现 Agent 保存。
-- [ ] 实现 system prompt 读取和保存。
-- [ ] 实现 selected resources 保存。
-- [ ] 实现 Agent 校验。
-- [ ] 实现 `ResolvedAgentConfig` 生成。
-- [ ] 编写 AgentLibrary 单元测试。
+- [x] 创建 `AgentMac/AgentLibrary/` 目录。
+- [x] 定义 `AgentManifest`。
+- [x] 定义 `ModelConfig`。
+- [x] 定义 `PermissionConfig`。
+- [x] 定义 `ResolvedAgentConfig`。
+- [x] 定义 `AgentValidationError`。
+- [x] 实现 Agent ID 校验。
+- [x] 实现 Agent 创建。
+- [x] 实现默认 `agent.yaml` 生成。
+- [x] 实现默认 `system.md` 生成。
+- [x] 实现 Agent 列表加载。
+- [x] 实现单个 Agent 加载。
+- [x] 实现 Agent 保存。
+- [x] 实现 system prompt 读取和保存。
+- [x] 实现 selected resources 保存。
+- [x] 实现 Agent 校验。
+- [x] 实现 `ResolvedAgentConfig` 生成。
+- [x] 编写 AgentLibrary 单元测试。
 
 ## 验收标准
 
@@ -108,6 +113,7 @@ AgentLibrary
 ## 第一版不做
 
 - 不做 Agent 版本管理。
+- 不做 Agent 重命名。
 - 不做 Agent 复制和导入导出。
 - 不做 raw YAML 高级编辑器。
 - 不做 Agent 图标和颜色。
