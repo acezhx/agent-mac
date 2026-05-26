@@ -46,6 +46,22 @@ AgentMac 是一个基于 Pi agent 框架构建的 macOS 桌面应用。它的目
 
 ## 核心产品决策
 
+### SwiftUI 应用架构采用 TCA
+
+macOS UI 和应用级状态编排采用 The Composable Architecture（TCA）。
+
+规范：
+
+- `AppShell` 以及 Agent 管理、资源管理、会话、审批等可见功能优先按 TCA Feature 组织。
+- SwiftUI View 只负责渲染状态和发送 action，不直接承载业务流程或长生命周期副作用。
+- Reducer 负责 UI 状态转移、用户 action 处理和 effect 编排。
+- 文件访问、Agent 读写、资源管理、runtime 通信等能力保留在对应服务模块，通过 TCA
+  dependency 注入到 Feature。
+- `FileStore`、`ResourceLibrary`、`AgentLibrary`、`RuntimeBridge` 等底层模块不因为项目采用
+  TCA 就直接依赖 TCA。
+
+TCA 是 UI 和应用编排架构，不是所有数据结构和底层服务的统一基类。
+
 ### 内置 Node 和 Pi
 
 应用需要包含内置的 Node.js runtime 和 Pi runtime。

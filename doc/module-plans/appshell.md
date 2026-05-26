@@ -5,6 +5,9 @@
 `AppShell` 负责 macOS 应用的可见界面和导航。它把 Agent 管理、资源管理、会话页面串起来，
 但不直接处理底层文件读写和 Runtime Host 细节。
 
+`AppShell` 是第一版 TCA 架构的主要落地点。它负责组织根 Feature，并把 Agent 管理、资源管理、
+会话和后续审批页面拆成可组合的子 Feature。
+
 ## 依赖关系
 
 ```text
@@ -22,6 +25,14 @@ AppShell
 ```
 
 ## 需要开发的功能
+
+### TCA Feature 架构
+
+- 创建根 `AppFeature`，管理应用级导航和当前选择状态。
+- 为 Agent 管理、资源管理、会话页面创建子 Feature。
+- 通过 TCA dependency 调用 `AgentLibrary`、`ResourceLibrary` 和 `Session` 服务。
+- SwiftUI View 只渲染 Store 状态并发送 action。
+- 异步加载、保存、启动会话和处理错误放在 reducer effect 中。
 
 ### 应用外壳
 
@@ -79,16 +90,21 @@ AppShell
 ## Checklist
 
 - [ ] 创建 `AgentMac/AppShell/` 目录。
+- [ ] 创建根 `AppFeature`。
+- [ ] 配置 TCA dependencies。
 - [ ] 实现根视图。
 - [ ] 实现主导航。
+- [ ] 创建 Agent 管理 Feature。
 - [ ] 实现 Agent 列表。
 - [ ] 实现 Agent 创建表单。
 - [ ] 实现 Agent 编辑页。
 - [ ] 实现 system prompt 编辑器。
 - [ ] 实现资源选择控件。
+- [ ] 创建资源管理 Feature。
 - [ ] 实现 knowledge 列表和编辑入口。
 - [ ] 实现 skill 列表和编辑入口。
 - [ ] 实现 tool 列表和编辑入口。
+- [ ] 创建会话 Feature。
 - [ ] 实现会话页面。
 - [ ] 实现消息输入。
 - [ ] 实现流式输出展示。
@@ -97,6 +113,8 @@ AppShell
 
 ## 验收标准
 
+- UI 状态、用户操作和异步 effect 由 TCA Feature 管理。
+- SwiftUI View 不直接调用 `FileStore`、`ResourceLibrary`、`AgentLibrary` 或 `RuntimeBridge`。
 - 用户可以从 UI 创建 Agent。
 - 用户可以编辑 Agent 的 system prompt。
 - 用户可以选择 knowledge、skills、tools。

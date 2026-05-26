@@ -26,7 +26,7 @@ Session
   - failed
   - aborted
 - 后续增加 waitingForApproval。
-- 状态变化应可被 UI 观察。
+- 状态变化应可被 AppShell 的 TCA Feature 观察或订阅。
 
 ### 消息模型
 

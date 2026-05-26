@@ -52,6 +52,7 @@ Approval
 
 ### UI 交互
 
+- 通过 AppShell 的 TCA Feature 接入审批 UI。
 - 展示审批请求。
 - 展示命令或工具名称。
 - 展示目标路径或网络目标。
@@ -81,6 +82,7 @@ Approval
 - [ ] 支持 network 请求。
 - [ ] 支持 secrets 请求。
 - [ ] 实现审批 UI。
+- [ ] 通过 AppShell/TCA 接入审批 UI。
 - [ ] 将审批结果回传 Session。
 - [ ] 将审批结果回传 Runtime Host。
 - [ ] 编写 Approval 单元测试。
@@ -89,6 +91,7 @@ Approval
 ## 验收标准
 
 - runtime 返回工具审批请求时，UI 能展示请求详情。
+- 审批 UI 状态、用户选择和异步回传由 TCA Feature 管理。
 - 权限为 allow 时可以自动批准低风险请求。
 - 权限为 ask 时 UI 会等待用户选择。
 - 权限为 deny 时会直接拒绝。

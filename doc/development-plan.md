@@ -189,10 +189,13 @@ FileStore
 
 ## 阶段 7：AppShell
 
-目标：实现第一版最小 UI。
+目标：基于 SwiftUI + TCA 实现第一版最小 UI。
 
 开发内容：
 
+- 创建根 `AppFeature`。
+- 将 Agent 管理、资源管理、会话页面拆成 TCA 子 Feature。
+- 通过 TCA dependency 接入 `AgentLibrary`、`ResourceLibrary` 和 `Session`。
 - App 根视图和导航。
 - Agent 列表。
 - Agent 创建入口。
@@ -206,6 +209,8 @@ FileStore
 
 验收标准：
 
+- UI 状态、用户 action 和异步 effect 由 TCA Feature 管理。
+- SwiftUI View 不直接调用底层服务模块。
 - 用户可以创建 Agent。
 - 用户可以编辑 Agent 的 system prompt。
 - 用户可以选择 knowledge、skills、tools。
@@ -221,6 +226,7 @@ FileStore
 
 - 实现 `ApprovalService`。
 - 定义审批请求 UI。
+- 审批 UI 通过 AppShell 的 TCA Feature 接入。
 - 支持 allow、ask、deny。
 - 根据 Agent 权限配置判断工具请求。
 - 对 shell、edit、network 等敏感工具请求展示确认。

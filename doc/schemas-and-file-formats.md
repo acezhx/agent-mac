@@ -235,12 +235,24 @@ permissions:
 | `permissions.network` | enum | 否 | `ask` | 网络权限。 |
 | `permissions.secrets` | string[] | 否 | `[]` | 需要的密钥名称。 |
 
-### 校验规则
+### ResourceLibrary 最小校验
 
-- `id` 必须合法，并与目录名一致。
+`ResourceLibrary` 阶段只维护共享 tool 文件，不执行 tool，也不做完整 schema 深度校验。
+它负责的最小结构校验为：
+
+- 目录名必须符合 ID 规则。
+- tool 目录必须包含 `tool.yaml`。
+- `tool.yaml` 必须包含顶层 `entry` 字段。
+- `entry` 必须是位于当前 tool 目录内的相对路径。
+- `entry` 指向的入口文件必须存在且是文件。
+
+### 后续消费校验
+
+Agent 或 Runtime 消费 tool 配置前还应校验：
+
+- `id` 必须合法，并与所在目录名一致。
 - `name` 不能为空。
 - `runtime` 第一版必须是 `node`。
-- `entry` 必须存在且是文件。
 - `permissions.network` 必须是 `allow`、`ask`、`deny` 之一。
 - 第一版不验证 tool 运行结果。
 

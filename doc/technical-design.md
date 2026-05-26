@@ -7,8 +7,9 @@ Node 负责 Pi 集成。
 
 ```mermaid
 flowchart LR
-    User["用户"] --> SwiftUI["SwiftUI 应用"]
-    SwiftUI --> AppServices["Swift 应用服务"]
+    User["用户"] --> SwiftUI["SwiftUI Views"]
+    SwiftUI --> TCA["TCA Features"]
+    TCA --> AppServices["Swift 应用服务"]
     AppServices --> FileData["Application Support 文件"]
     AppServices --> RuntimeBridge["RuntimeBridge"]
     RuntimeBridge <-->|"stdio JSONL"| RuntimeHost["Node Runtime Host"]
@@ -37,6 +38,30 @@ AgentMac.app
 
 SwiftUI 和 Node Runtime Host 之间使用一个小的应用私有协议通信，例如基于 stdin/stdout 的
 JSONL。这个协议应保持窄接口，避免 Pi 内部变化导致 Swift 侧大面积修改。
+
+## 技术选型与架构约束
+
+### SwiftUI + TCA
+
+AgentMac 的 macOS UI 和应用级状态编排采用 The Composable Architecture（TCA）。
+
+TCA 的使用边界：
+
+- `AppShell` 和各个可见功能页面按 TCA Feature 组织 state、action、reducer 和 effects。
+- SwiftUI View 只根据 store 渲染界面，并把用户操作发送为 action。
+- Reducer 编排异步 effect，例如加载 Agent、保存资源、启动 session、发送消息和处理 runtime
+  事件。
+- Feature 通过 TCA dependency 调用 `AgentLibrary`、`ResourceLibrary`、`Session`、
+  `RuntimeBridge` 等服务。
+
+不使用 TCA 的位置：
+
+- `FileStore` 保持普通 Swift 文件服务。
+- `ResourceLibrary`、`AgentLibrary` 保持普通 Swift 应用服务和领域类型。
+- `RuntimeBridge` 保持进程通信边界。
+- `RuntimeHost` 是 Node 侧代码，不依赖 Swift/TCA。
+
+原则：TCA 用于 UI 状态和应用流程编排；底层模块通过明确接口提供能力，不直接依赖 TCA。
 
 ## 用户数据布局
 

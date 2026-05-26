@@ -46,6 +46,8 @@ ResourceLibrary
 - 创建初始 `tool.yaml`。
 - 读取 `tool.yaml`。
 - 保存 `tool.yaml`。
+- 读取入口文件内容。
+- 保存入口文件内容。
 - 支持默认入口文件 `index.js`。
 - 第一版只校验文件存在，不执行 tool。
 
@@ -65,23 +67,24 @@ ResourceLibrary
 
 ## Checklist
 
-- [ ] 创建 `AgentMac/ResourceLibrary/` 目录。
-- [ ] 定义 knowledge 资源模型。
-- [ ] 定义 skill 资源模型。
-- [ ] 定义 tool 资源模型。
-- [ ] 定义资源校验错误。
-- [ ] 实现 knowledge 列表。
-- [ ] 实现 knowledge 创建。
-- [ ] 实现 knowledge 读取和保存。
-- [ ] 实现 skill 列表。
-- [ ] 实现 skill 创建。
-- [ ] 实现 `SKILL.md` 读取和保存。
-- [ ] 实现 skill 最小结构校验。
-- [ ] 实现 tool 列表。
-- [ ] 实现 tool 创建。
-- [ ] 实现 `tool.yaml` 读取和保存。
-- [ ] 实现 tool 最小结构校验。
-- [ ] 编写 ResourceLibrary 单元测试。
+- [x] 创建 `AgentMac/ResourceLibrary/` 目录。
+- [x] 定义 knowledge 资源模型。
+- [x] 定义 skill 资源模型。
+- [x] 定义 tool 资源模型。
+- [x] 定义资源校验错误。
+- [x] 实现 knowledge 列表。
+- [x] 实现 knowledge 创建。
+- [x] 实现 knowledge 读取和保存。
+- [x] 实现 skill 列表。
+- [x] 实现 skill 创建。
+- [x] 实现 `SKILL.md` 读取和保存。
+- [x] 实现 skill 最小结构校验。
+- [x] 实现 tool 列表。
+- [x] 实现 tool 创建。
+- [x] 实现 `tool.yaml` 读取和保存。
+- [x] 实现 tool 入口文件读取和保存。
+- [x] 实现 tool 最小结构校验。
+- [x] 编写 ResourceLibrary 单元测试。
 
 ## 验收标准
 
