@@ -9,11 +9,11 @@ JSONL commands，读取 JSONL events，并把它们映射成 Swift 类型。
 
 ```text
 RuntimeBridge
-  -> AgentLibrary
   -> RuntimeHost process
 ```
 
-`RuntimeBridge` 不编辑资源，不理解 UI，也不包含 Pi SDK 代码。
+`RuntimeBridge` 不编辑资源，不理解 UI，也不包含 Pi SDK 代码。第一版直接通过显式配置定位
+Node 和 Runtime Host；后续接入 Session/AgentLibrary 时再由上层传入已解析的 runtime 配置。
 
 ## 需要开发的功能
 
@@ -59,21 +59,38 @@ RuntimeBridge
 
 ## Checklist
 
-- [ ] 创建 `AgentMac/RuntimeBridge/` 目录。
-- [ ] 定义 `RuntimeCommand`。
-- [ ] 定义 `RuntimeEvent`。
-- [ ] 定义 `RuntimeBridgeError`。
-- [ ] 实现 runtime 路径配置。
-- [ ] 实现进程启动。
-- [ ] 实现进程停止。
-- [ ] 实现 stderr 日志收集。
-- [ ] 实现 JSONL command 写入。
-- [ ] 实现 JSONL event 读取。
-- [ ] 实现 `ping`。
-- [ ] 实现 `startSession`。
-- [ ] 实现 `sendMessage`。
-- [ ] 实现 `abortSession`。
-- [ ] 编写 RuntimeBridge 单元测试或集成测试。
+- [x] 创建 `AgentMac/RuntimeBridge/` 目录。
+- [x] 定义 `RuntimeCommand`。
+- [x] 定义 `RuntimeEvent`。
+- [x] 定义 `RuntimeBridgeError`。
+- [x] 实现 runtime 路径配置。
+- [x] 实现进程启动。
+- [x] 实现进程停止。
+- [x] 实现 stderr 日志收集。
+- [x] 实现 JSONL command 写入。
+- [x] 实现 JSONL event 读取。
+- [x] 实现 `ping`。
+- [x] 实现 `startSession`。
+- [x] 实现 `sendMessage`。
+- [x] 实现 `abortSession`。
+- [x] 编写 RuntimeBridge 单元测试或集成测试。
+
+## 当前实现
+
+- `RuntimeBridgeConfiguration` 支持显式路径和 app bundle 内 `Contents/Resources/Runtime` 路径。
+- `RuntimeBridge` 负责启动 vendored Node、运行 Runtime Host、维护 stdin/stdout/stderr pipe。
+- `RuntimeCommand`、`RuntimeEvent`、`RuntimeJSONValue` 描述 JSONL command/event envelope。
+- `RuntimeBridgeError` 覆盖配置缺失、进程状态、写入失败、event 解析失败、Runtime Host error event
+  和进程异常退出。
+- `ping`、`startSession`、`sendMessage`、`abortSession` 已按第一版 Runtime 协议实现。
+- 第一版不并发发送多个 command；调用方应串行调用 RuntimeBridge API。
+
+## 验证方法
+
+```text
+node --test AgentMac/RuntimeHost/runtime-host.test.mjs
+xcodebuild test -scheme AgentMac -destination 'platform=macOS' -only-testing:AgentMacTests
+```
 
 ## 验收标准
 

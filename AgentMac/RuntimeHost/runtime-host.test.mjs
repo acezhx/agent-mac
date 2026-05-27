@@ -1,10 +1,22 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
+import { existsSync } from "node:fs";
+import { mkdtemp } from "node:fs/promises";
+import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 
+const require = createRequire(import.meta.url);
+const { RuntimeHost } = require("./runtime-host.js");
 const runtimeHostPath = fileURLToPath(new URL("./runtime-host.js", import.meta.url));
+const vendorNodePath = fileURLToPath(new URL("../../Vendor/Runtime/darwin-arm64/node/bin/node", import.meta.url));
+const vendorPiEntryPath = fileURLToPath(new URL(
+  "../../Vendor/Runtime/darwin-arm64/pi/node_modules/@earendil-works/pi-coding-agent/dist/index.js",
+  import.meta.url,
+));
 
 test("ping command returns pong event", async (t) => {
   const host = startRuntimeHost(t);
@@ -199,8 +211,179 @@ test("abortSession removes mock session", async (t) => {
   assert.equal(event.payload.code, "missing_session");
 });
 
-function startRuntimeHost(t) {
-  const child = spawn(process.execPath, [runtimeHostPath], {
+test("abortSession removes pi session even when Pi abort throws", async () => {
+  const events = [];
+  let disposed = false;
+  const host = new RuntimeHost({
+    input: {},
+    output: {
+      write(line) {
+        events.push(JSON.parse(line));
+      },
+    },
+    error: {
+      write() {},
+    },
+  });
+  host.sessions.set("ses_001", {
+    kind: "pi",
+    id: "ses_001",
+    piSession: {
+      async abort() {
+        throw new Error("abort boom");
+      },
+      dispose() {
+        disposed = true;
+      },
+    },
+    unsubscribe() {},
+    testFauxRegistration: null,
+  });
+
+  await host.abortSession({
+    id: "cmd_abort",
+    payload: {
+      sessionId: "ses_001",
+    },
+  });
+
+  assert.equal(host.sessions.has("ses_001"), false);
+  assert.equal(disposed, true);
+  assert.equal(events.at(-1).replyTo, "cmd_abort");
+  assert.equal(events.at(-1).sessionId, "ses_001");
+  assert.equal(events.at(-1).name, "sessionAborted");
+});
+
+test("fixed coding agent streams through Pi SDK faux provider", {
+  skip: realPiRuntimeSkipReason(),
+}, async (t) => {
+  const tempDir = await mkdtemp(join(tmpdir(), "agentmac-runtimehost-pi-"));
+  const host = startRuntimeHost(t, {
+    nodePath: vendorNodePath,
+    useMockPi: false,
+    env: {
+      AGENTMAC_PI_AGENT_DIR: join(tempDir, "agent"),
+      AGENTMAC_PI_MODULE_ENTRY: vendorPiEntryPath,
+      AGENTMAC_RUNTIMEHOST_TEST_FAUX_RESPONSE: "pong from pi sdk",
+    },
+  });
+
+  host.writeCommand({
+    type: "command",
+    id: "cmd_010",
+    name: "startSession",
+    payload: {
+      agent: { mode: "fixedCodingAgent" },
+      workspacePath: tempDir,
+    },
+  });
+
+  assert.deepEqual(await host.readEvent(), {
+    type: "event",
+    id: "evt_001",
+    replyTo: "cmd_010",
+    sessionId: "ses_001",
+    name: "sessionStarted",
+    payload: {},
+  });
+
+  host.writeCommand({
+    type: "command",
+    id: "cmd_011",
+    name: "sendMessage",
+    payload: {
+      sessionId: "ses_001",
+      message: {
+        role: "user",
+        content: "ping",
+      },
+    },
+  });
+
+  let assistantText = "";
+  for (;;) {
+    const event = await host.readEvent();
+    assert.equal(event.type, "event");
+    assert.equal(event.replyTo, "cmd_011");
+    assert.equal(event.sessionId, "ses_001");
+    if (event.name === "assistantDelta") {
+      assistantText += event.payload.text;
+    } else if (event.name === "messageCompleted") {
+      break;
+    } else {
+      assert.fail(`Unexpected event: ${JSON.stringify(event)}`);
+    }
+  }
+
+  assert.equal(assistantText, "pong from pi sdk");
+});
+
+test("fixed coding agent processes queued commands in input order", {
+  skip: realPiRuntimeSkipReason(),
+}, async (t) => {
+  const tempDir = await mkdtemp(join(tmpdir(), "agentmac-runtimehost-pi-order-"));
+  const host = startRuntimeHost(t, {
+    nodePath: vendorNodePath,
+    useMockPi: false,
+    env: {
+      AGENTMAC_PI_AGENT_DIR: join(tempDir, "agent"),
+      AGENTMAC_PI_MODULE_ENTRY: vendorPiEntryPath,
+      AGENTMAC_RUNTIMEHOST_TEST_FAUX_RESPONSE: "ordered response",
+    },
+  });
+
+  host.writeCommand({
+    type: "command",
+    id: "cmd_start",
+    name: "startSession",
+    payload: {
+      agent: { mode: "fixedCodingAgent" },
+      workspacePath: tempDir,
+    },
+  });
+  host.writeCommand({
+    type: "command",
+    id: "cmd_send",
+    name: "sendMessage",
+    payload: {
+      sessionId: "ses_001",
+      message: {
+        role: "user",
+        content: "ping",
+      },
+    },
+  });
+
+  const started = await host.readEvent();
+  assert.equal(started.name, "sessionStarted");
+  assert.equal(started.replyTo, "cmd_start");
+
+  let assistantText = "";
+  for (;;) {
+    const event = await host.readEvent();
+    assert.equal(event.replyTo, "cmd_send");
+    if (event.name === "assistantDelta") {
+      assistantText += event.payload.text;
+    } else if (event.name === "messageCompleted") {
+      break;
+    } else {
+      assert.fail(`Unexpected event: ${JSON.stringify(event)}`);
+    }
+  }
+
+  assert.equal(assistantText, "ordered response");
+});
+
+function startRuntimeHost(t, options = {}) {
+  const env = { ...process.env, ...options.env };
+  if (options.useMockPi === false) {
+    delete env.AGENTMAC_RUNTIMEHOST_USE_MOCK_PI;
+  } else {
+    env.AGENTMAC_RUNTIMEHOST_USE_MOCK_PI = "1";
+  }
+
+  const child = spawn(options.nodePath ?? process.execPath, [runtimeHostPath], {
+    env,
     stdio: ["pipe", "pipe", "pipe"],
   });
   const events = [];
@@ -254,7 +437,7 @@ function startRuntimeHost(t) {
       return new Promise((resolve, reject) => {
         const timeout = setTimeout(() => {
           reject(new Error(`Timed out waiting for RuntimeHost event. stderr=${stderr.join("")}`));
-        }, 1000);
+        }, 5000);
         waiters.push((event) => {
           clearTimeout(timeout);
           resolve(event);
@@ -271,4 +454,14 @@ function startRuntimeHost(t) {
       events.push(event);
     }
   }
+}
+
+function realPiRuntimeSkipReason() {
+  if (!existsSync(vendorNodePath)) {
+    return "vendored Node runtime is not installed";
+  }
+  if (!existsSync(vendorPiEntryPath)) {
+    return "vendored Pi runtime is not installed";
+  }
+  return false;
 }

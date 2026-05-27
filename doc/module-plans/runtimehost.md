@@ -42,6 +42,7 @@ RuntimeHost
 - 在接入 Pi 前先支持模拟 streaming。
 - `sendMessage` 返回多个 delta event。
 - 最后返回 completed event。
+- 接入 Pi 后 mock 仅作为测试模式保留，通过 `AGENTMAC_RUNTIMEHOST_USE_MOCK_PI=1` 显式启用。
 
 ### 固定 Pi coding agent
 
@@ -54,6 +55,10 @@ RuntimeHost
 - 接收用户消息。
 - 转发 assistant streaming output。
 - 转发 session completed 或 failed。
+- 当前实现使用 Pi `createAgentSession`、内存 session manager 和 `noTools: "all"`。
+- RuntimeHost 显式禁用 Pi extensions、skills、prompt templates、themes 和项目 context files。
+- Pi 可变配置目录默认写入 `~/Library/Application Support/AgentMac/Pi`，也可由
+  `AGENTMAC_PI_AGENT_DIR` 覆盖。
 
 ### 审批扩展点
 
@@ -78,10 +83,10 @@ RuntimeHost
 - [x] 实现 mock `startSession`。
 - [x] 实现 mock `sendMessage` streaming。
 - [x] 实现 `abortSession` 占位。
-- [ ] 接入固定 Pi coding agent。
+- [x] 接入固定 Pi coding agent。
 - [x] 支持 `fixedCodingAgent` session mode。
-- [ ] 将 Pi events 转为稳定 event。
-- [ ] 实现默认审批拒绝。
+- [x] 将 Pi events 转为稳定 event。
+- [x] 实现默认审批拒绝。
 - [x] 实现协议错误处理。
 - [x] 编写 RuntimeHost 命令行验证脚本或测试。
 

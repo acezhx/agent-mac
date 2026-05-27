@@ -476,12 +476,18 @@ protocol ToolApprovalHandling {
 - 通过 JSONL 接收 Swift 命令。
 - 加载 Pi。
 - 启动 Pi sessions。
-- 应用解析后的 Agent 配置。
-- 读取 `ResolvedAgentConfig` 中的 system prompt、knowledge、skills、tools 绝对路径。
 - 将 Pi events 转发给 Swift。
 - 第一阶段遇到工具审批请求时返回 denied/unsupported。
 - 完整 `Approval` 模块实现后，当需要 Swift 审批时暂停 tool 执行。
 - 用 Swift 友好的事件格式返回错误和诊断信息。
+
+第一阶段 RuntimeHost 只支持固定 `fixedCodingAgent` session mode，用于验证
+SwiftUI -> RuntimeBridge -> RuntimeHost -> Pi 主链路。该模式不读取用户 `agent.yaml`，不加载
+用户选择的 knowledge、skills、tools，并禁用 Pi tools、extensions、skills、prompt templates、
+themes 和项目 context files。
+
+后续可配置 Agent 阶段再支持 `resolved` mode，接收 Swift 侧 `AgentLibrary` 生成的
+`ResolvedAgentConfig`，并读取其中的 system prompt、knowledge、skills、tools 绝对路径。
 
 不负责：
 
@@ -529,7 +535,6 @@ flowchart TD
     Session --> FileStore
     Session --> RuntimeBridge["RuntimeBridge"]
 
-    RuntimeBridge --> AgentLibrary
     RuntimeBridge --> RuntimeHost["RuntimeHost 进程"]
     RuntimeHost --> Pi["Pi runtime"]
 ```
@@ -555,7 +560,6 @@ Session
   -> RuntimeBridge
 
 RuntimeBridge
-  -> AgentLibrary
   -> RuntimeHost process
 
 FileStore

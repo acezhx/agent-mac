@@ -130,7 +130,7 @@ runtime 模式优先级：
 4. 设置必要环境变量。
 5. 配置 stdin/stdout/stderr pipe。
 6. 启动进程。
-7. 先发送 `ping` 验证 runtime 可用。
+7. 启动后显式发送 `ping` 验证 runtime 可用。
 
 建议环境变量：
 
@@ -138,9 +138,20 @@ runtime 模式优先级：
 AGENTMAC_APP_SUPPORT_DIR
 AGENTMAC_LOG_DIR
 AGENTMAC_RUNTIME_MODE
+AGENTMAC_PI_AGENT_DIR
 ```
 
 不要通过环境变量传递长期保存的密钥。后续需要密钥时，应由 macOS Keychain 管理。
+`AGENTMAC_PI_AGENT_DIR` 用于指定 Pi 自身的可变配置目录；未设置时 Runtime Host 使用
+`~/Library/Application Support/AgentMac/Pi`。
+
+开发或自动化测试可以临时覆盖 Pi SDK 入口：
+
+```text
+AGENTMAC_PI_MODULE_ENTRY=/path/to/@earendil-works/pi-coding-agent/dist/index.js
+```
+
+该变量只用于定位本地构建产物，不应写入用户设置。
 
 ## Runtime Host 工作目录
 

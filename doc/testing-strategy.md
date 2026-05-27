@@ -97,6 +97,12 @@ swift test
 RuntimeHost 命令行测试：
 
 ```text
+node --test AgentMac/RuntimeHost/runtime-host.test.mjs
+```
+
+手工协议调试：
+
+```text
 node AgentMac/RuntimeHost/runtime-host.js
 ```
 
@@ -162,6 +168,7 @@ xcodebuild test -scheme AgentMac -destination 'platform=macOS'
 - 未知 command 返回 `unsupported_command`。
 - mock `sendMessage` 返回多个 delta 和 completed。
 - 固定 Pi coding agent 可以启动。
+- vendored Node/Pi 存在时，faux provider 集成测试可以覆盖固定 Pi coding agent 的流式输出。
 
 固定 Pi coding agent 是 Runtime Host 的临时 session mode，用于验证 SwiftUI ->
 RuntimeBridge -> RuntimeHost -> Pi 主链路。该模式不读取用户 `agent.yaml`。真实 Pi 会话可能
@@ -174,7 +181,10 @@ Pi 会话。
 
 - 进程启动。
 - `ping` 往返。
+- `startSession` 和 `sendMessage` 流式输出。
+- `abortSession` 清理。
 - event 解析。
+- Runtime Host error event 映射。
 - Runtime Host 退出后的错误处理。
 - stderr 日志收集。
 

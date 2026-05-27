@@ -116,7 +116,8 @@ resolved:
 
 - 只用于验证 SwiftUI -> RuntimeBridge -> RuntimeHost -> Pi 主链路。
 - 使用 bundled Pi runtime。
-- 自定义 tools 默认不启用。
+- Runtime Host 以 `noTools: "all"` 启动 Pi session，自定义 tools 和 Pi 内建工具都不启用。
+- Runtime Host 不加载 Pi extensions、skills、prompt templates、themes 和项目 context files。
 - 需要模型凭据时，由 Swift 启动 Runtime Host 时通过安全方式提供；第一版测试可以使用
   mock streaming 替代真实模型调用。
 
@@ -355,9 +356,8 @@ internal_error
 
 在 `Approval` 完整实现前：
 
-- Runtime Host 可以发出 `toolApprovalRequested`。
-- Swift 收到后应返回 `approveToolCall`，decision 为 `denied`。
-- 如果 Runtime Host 不能等待审批，可以直接返回 `tool_approval_unsupported` error。
+- Runtime Host 当前不等待审批，也不发起真实工具执行。
+- 如果 Pi 返回工具调用或工具执行事件，Runtime Host 直接返回 `tool_approval_unsupported` error。
 - UI 不应卡死。
 
 ## 兼容性规则
