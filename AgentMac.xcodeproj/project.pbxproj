@@ -56,6 +56,16 @@
 			path = doc;
 			sourceTree = "<group>";
 		};
+		33119A792FC68B4100FE2BE0 /* Vendor */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = Vendor;
+			sourceTree = "<group>";
+		};
+		33119A7C2FC68B5E00FE2BE0 /* scripts */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = scripts;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -94,6 +104,8 @@
 				331152F52FC4880A00FE2BE0 /* AgentMacUITests */,
 				331152DC2FC4880800FE2BE0 /* Products */,
 				331153112FC488D200FE2BE0 /* AGENTS.md */,
+				33119A792FC68B4100FE2BE0 /* Vendor */,
+				33119A7C2FC68B5E00FE2BE0 /* scripts */,
 			);
 			sourceTree = "<group>";
 		};
