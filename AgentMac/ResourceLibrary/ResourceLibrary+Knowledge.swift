@@ -51,6 +51,48 @@ nonisolated extension ResourceLibrary {
         return makeKnowledgeResource(fileName: fileName)
     }
 
+    /// 保存 knowledge 文件内容，并在需要时改名。
+    ///
+    /// 当 `newFileName` 与当前文件名不同时，该方法会写入新文件并删除旧文件；目标文件已存在时不会覆盖。
+    ///
+    /// - Parameters:
+    ///   - contents: 要写入的 UTF-8 文本内容。
+    ///   - fileName: 当前 `library/knowledge/` 下的一级文件名。
+    ///   - newFileName: 新的 `library/knowledge/` 下一级文件名，必须使用 `.md` 或 `.txt`。
+    /// - Returns: 保存后的 knowledge 资源描述。
+    /// - Throws: 文件名非法、源文件不存在、目标文件已存在或写入失败。
+    @discardableResult
+    func saveKnowledgeFile(_ contents: String, named fileName: String, renamingTo newFileName: String) throws -> KnowledgeResource {
+        try validateKnowledgeFileName(fileName)
+        try validateKnowledgeFileName(newFileName)
+
+        guard fileName != newFileName else {
+            return try saveKnowledgeFile(contents, named: fileName)
+        }
+
+        let currentPath = knowledgePath(fileName: fileName)
+        let newPath = knowledgePath(fileName: newFileName)
+        guard try fileStore.fileExists(at: currentPath) else {
+            throw FileStoreError.fileNotFound(path: currentPath)
+        }
+        guard try !fileStore.fileExists(at: newPath) else {
+            throw ResourceValidationError.duplicateKnowledgeFileName(fileName: newFileName)
+        }
+
+        try fileStore.writeTextFile(contents, to: newPath)
+        try fileStore.deleteFile(at: currentPath)
+        return makeKnowledgeResource(fileName: newFileName)
+    }
+
+    /// 删除 knowledge 文件。
+    ///
+    /// - Parameter fileName: `library/knowledge/` 下的一级文件名。
+    /// - Throws: 文件名非法、文件不存在或删除失败。
+    func deleteKnowledgeFile(named fileName: String) throws {
+        try validateKnowledgeFileName(fileName)
+        try fileStore.deleteFile(at: knowledgePath(fileName: fileName))
+    }
+
     /// 根据文件名构造 knowledge 资源描述。
     ///
     /// - Parameter fileName: `library/knowledge/` 下的文件名。

@@ -9,6 +9,15 @@
 /* Begin PBXBuildFile section */
 		331153142FC492E700FE2BE0 /* MarkdownUI in Frameworks */ = {isa = PBXBuildFile; productRef = 331153132FC492E700FE2BE0 /* MarkdownUI */; };
 		331153172FC494BD00FE2BE0 /* ComposableArchitecture in Frameworks */ = {isa = PBXBuildFile; productRef = 331153162FC494BD00FE2BE0 /* ComposableArchitecture */; };
+		33B000012FCA000000FE2BE0 /* ComposableArchitecture in Frameworks */ = {isa = PBXBuildFile; productRef = 33B000022FCA000000FE2BE0 /* ComposableArchitecture */; };
+		33B001102FCA100000FE2BE0 /* Dependencies in Frameworks */ = {isa = PBXBuildFile; productRef = 33B001202FCA100000FE2BE0 /* Dependencies */; };
+		33B001112FCA100000FE2BE0 /* CasePaths in Frameworks */ = {isa = PBXBuildFile; productRef = 33B001212FCA100000FE2BE0 /* CasePaths */; };
+		33B001122FCA100000FE2BE0 /* Perception in Frameworks */ = {isa = PBXBuildFile; productRef = 33B001222FCA100000FE2BE0 /* Perception */; };
+		33B001132FCA100000FE2BE0 /* Dependencies in Frameworks */ = {isa = PBXBuildFile; productRef = 33B001232FCA100000FE2BE0 /* Dependencies */; };
+		33B001142FCA100000FE2BE0 /* CasePaths in Frameworks */ = {isa = PBXBuildFile; productRef = 33B001242FCA100000FE2BE0 /* CasePaths */; };
+		33B001152FCA100000FE2BE0 /* Perception in Frameworks */ = {isa = PBXBuildFile; productRef = 33B001252FCA100000FE2BE0 /* Perception */; };
+		33B001162FCA100000FE2BE0 /* PerceptionCore in Frameworks */ = {isa = PBXBuildFile; productRef = 33B001262FCA100000FE2BE0 /* PerceptionCore */; };
+		33B001172FCA100000FE2BE0 /* PerceptionCore in Frameworks */ = {isa = PBXBuildFile; productRef = 33B001272FCA100000FE2BE0 /* PerceptionCore */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -74,6 +83,10 @@
 			buildActionMask = 2147483647;
 			files = (
 				331153172FC494BD00FE2BE0 /* ComposableArchitecture in Frameworks */,
+				33B001102FCA100000FE2BE0 /* Dependencies in Frameworks */,
+				33B001112FCA100000FE2BE0 /* CasePaths in Frameworks */,
+				33B001122FCA100000FE2BE0 /* Perception in Frameworks */,
+				33B001162FCA100000FE2BE0 /* PerceptionCore in Frameworks */,
 				331153142FC492E700FE2BE0 /* MarkdownUI in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -82,6 +95,11 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				33B000012FCA000000FE2BE0 /* ComposableArchitecture in Frameworks */,
+				33B001132FCA100000FE2BE0 /* Dependencies in Frameworks */,
+				33B001142FCA100000FE2BE0 /* CasePaths in Frameworks */,
+				33B001152FCA100000FE2BE0 /* Perception in Frameworks */,
+				33B001172FCA100000FE2BE0 /* PerceptionCore in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -143,6 +161,10 @@
 			packageProductDependencies = (
 				331153132FC492E700FE2BE0 /* MarkdownUI */,
 				331153162FC494BD00FE2BE0 /* ComposableArchitecture */,
+				33B001202FCA100000FE2BE0 /* Dependencies */,
+				33B001212FCA100000FE2BE0 /* CasePaths */,
+				33B001222FCA100000FE2BE0 /* Perception */,
+				33B001262FCA100000FE2BE0 /* PerceptionCore */,
 			);
 			productName = AgentMac;
 			productReference = 331152DB2FC4880800FE2BE0 /* AgentMac.app */;
@@ -166,6 +188,11 @@
 			);
 			name = AgentMacTests;
 			packageProductDependencies = (
+				33B000022FCA000000FE2BE0 /* ComposableArchitecture */,
+				33B001232FCA100000FE2BE0 /* Dependencies */,
+				33B001242FCA100000FE2BE0 /* CasePaths */,
+				33B001252FCA100000FE2BE0 /* Perception */,
+				33B001272FCA100000FE2BE0 /* PerceptionCore */,
 			);
 			productName = AgentMacTests;
 			productReference = 331152E82FC4880A00FE2BE0 /* AgentMacTests.xctest */;
@@ -229,6 +256,9 @@
 			packageReferences = (
 				331153122FC492E700FE2BE0 /* XCRemoteSwiftPackageReference "swift-markdown-ui" */,
 				331153152FC494BD00FE2BE0 /* XCRemoteSwiftPackageReference "swift-composable-architecture" */,
+				33B001302FCA100000FE2BE0 /* XCRemoteSwiftPackageReference "swift-dependencies" */,
+				33B001312FCA100000FE2BE0 /* XCRemoteSwiftPackageReference "swift-case-paths" */,
+				33B001322FCA100000FE2BE0 /* XCRemoteSwiftPackageReference "swift-perception" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 331152DC2FC4880800FE2BE0 /* Products */;
@@ -679,6 +709,30 @@
 				minimumVersion = 1.25.5;
 			};
 		};
+		33B001302FCA100000FE2BE0 /* XCRemoteSwiftPackageReference "swift-dependencies" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/pointfreeco/swift-dependencies";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 1.12.0;
+			};
+		};
+		33B001312FCA100000FE2BE0 /* XCRemoteSwiftPackageReference "swift-case-paths" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/pointfreeco/swift-case-paths";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 1.7.3;
+			};
+		};
+		33B001322FCA100000FE2BE0 /* XCRemoteSwiftPackageReference "swift-perception" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/pointfreeco/swift-perception";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.0.10;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -691,6 +745,51 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 331153152FC494BD00FE2BE0 /* XCRemoteSwiftPackageReference "swift-composable-architecture" */;
 			productName = ComposableArchitecture;
+		};
+		33B000022FCA000000FE2BE0 /* ComposableArchitecture */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 331153152FC494BD00FE2BE0 /* XCRemoteSwiftPackageReference "swift-composable-architecture" */;
+			productName = ComposableArchitecture;
+		};
+		33B001202FCA100000FE2BE0 /* Dependencies */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 33B001302FCA100000FE2BE0 /* XCRemoteSwiftPackageReference "swift-dependencies" */;
+			productName = Dependencies;
+		};
+		33B001212FCA100000FE2BE0 /* CasePaths */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 33B001312FCA100000FE2BE0 /* XCRemoteSwiftPackageReference "swift-case-paths" */;
+			productName = CasePaths;
+		};
+		33B001222FCA100000FE2BE0 /* Perception */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 33B001322FCA100000FE2BE0 /* XCRemoteSwiftPackageReference "swift-perception" */;
+			productName = Perception;
+		};
+		33B001232FCA100000FE2BE0 /* Dependencies */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 33B001302FCA100000FE2BE0 /* XCRemoteSwiftPackageReference "swift-dependencies" */;
+			productName = Dependencies;
+		};
+		33B001242FCA100000FE2BE0 /* CasePaths */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 33B001312FCA100000FE2BE0 /* XCRemoteSwiftPackageReference "swift-case-paths" */;
+			productName = CasePaths;
+		};
+		33B001252FCA100000FE2BE0 /* Perception */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 33B001322FCA100000FE2BE0 /* XCRemoteSwiftPackageReference "swift-perception" */;
+			productName = Perception;
+		};
+		33B001262FCA100000FE2BE0 /* PerceptionCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 33B001322FCA100000FE2BE0 /* XCRemoteSwiftPackageReference "swift-perception" */;
+			productName = PerceptionCore;
+		};
+		33B001272FCA100000FE2BE0 /* PerceptionCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 33B001322FCA100000FE2BE0 /* XCRemoteSwiftPackageReference "swift-perception" */;
+			productName = PerceptionCore;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

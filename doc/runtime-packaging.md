@@ -145,6 +145,16 @@ AGENTMAC_PI_AGENT_DIR
 `AGENTMAC_PI_AGENT_DIR` 用于指定 Pi 自身的可变配置目录；未设置时 Runtime Host 使用
 `~/Library/Application Support/AgentMac/Pi`。
 
+第一阶段真实 Pi 调试可以在该目录放置 Pi 自身读取的本地配置：
+
+```text
+~/Library/Application Support/AgentMac/Pi/settings.json
+~/Library/Application Support/AgentMac/Pi/auth.json
+```
+
+这只用于本机端到端验证固定 coding agent 主链路。`auth.json` 中的明文模型 key 是临时方案，
+不要提交到仓库；正式版本应迁移到 Keychain 或设置 UI 管理。
+
 开发或自动化测试可以临时覆盖 Pi SDK 入口：
 
 ```text

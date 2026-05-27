@@ -42,6 +42,15 @@ nonisolated extension ResourceLibrary {
         return try makeToolResource(id: id)
     }
 
+    /// 删除已有 tool 目录及其全部内容。
+    ///
+    /// - Parameter id: tool 目录 ID。
+    /// - Throws: ID 非法、目录不存在、目标不是目录或删除失败。
+    func deleteTool(id: String) throws {
+        try requireValidResourceID(id, kind: .tool)
+        try fileStore.deleteDirectory(at: toolDirectoryPath(id: id))
+    }
+
     /// 读取 tool 的 `tool.yaml` 内容。
     ///
     /// - Parameter id: tool 目录 ID。

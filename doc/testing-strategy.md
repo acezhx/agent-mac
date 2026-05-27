@@ -73,6 +73,7 @@
 
 - 创建 Agent。
 - 编辑 system prompt。
+- 创建和编辑 Resource。
 - 选择资源。
 - 启动 session。
 - 发送消息。
@@ -130,6 +131,8 @@ node AgentMac/RuntimeHost/runtime-host.js
 - 目录扫描。
 - 隐藏文件过滤。
 - 路径逃逸拒绝。
+- 外部目录复制到 app 数据目录时保留子目录，并拒绝覆盖已有目标。
+- 目录删除会移除整棵子树，并拒绝把普通文件当目录删除。
 
 验收命令：
 
@@ -143,6 +146,9 @@ xcodebuild test -scheme AgentMac -destination 'platform=macOS'
 
 - knowledge 识别。
 - skill 最小结构校验。
+- skill 目录导入。
+- skill 目录删除。
+- knowledge 改名保存和删除。
 - tool 最小结构校验。
 - 资源列表稳定排序。
 
@@ -197,20 +203,76 @@ Pi 会话。
 - running -> aborted。
 - 用户消息追加。
 - assistant delta 合并。
+- 重复 start、未完成 send 再 send、failed/aborted 后 send 的边界错误。
+- abort 后迟到 event 不覆盖 aborted 状态。
 - tool approval request 默认拒绝。
 
 ### AppShell
 
-第一版以手工验收为主：
+第一阶段固定 coding agent 会话竖切需要 reducer/state 自动化测试，UI 视觉测试暂缓。
 
-- 创建 Agent。
-- 编辑 system prompt。
-- 选择 resources。
-- 启动 session。
+必须自动化覆盖：
+
+- 创建 session 成功后保存 `ChatSessionSnapshot` 并启动快照订阅 effect。
+- 第一阶段已有当前 session 时不会再次创建本地 session。
+- 启动 Runtime session 的进行中标记和成功清理。
+- 发送消息时裁剪空白、清空输入并调用 dependency。
+- failed snapshot 同步为 UI 错误信息。
+- abort/reset action 调用 dependency 并清理进行中标记。
+- create/start/send/abort/reset 失败时清理对应进行中标记并展示错误。
+- 快照订阅失败时展示错误。
+- Agent 列表加载后保存摘要。
+- 选择 Agent 后加载编辑区字段。
+- 创建 Agent 后清空创建表单、选中新 Agent 并更新列表。
+- 保存 Agent 时保留当前 UI 尚未暴露的资源选择和权限配置。
+- Agent 创建和保存失败时清理对应进行中标记并展示错误。
+- Resource 列表按当前类型加载并保存摘要。
+- 切换 Resource 类型时清空编辑区并加载新类型列表。
+- 选择 Resource 后加载编辑区字段。
+- 创建 Resource 后清空创建表单、选中新 Resource 并更新列表。
+- 创建 knowledge 时允许 UI 不提供 ID，并由 Resource dependency 生成未占用文件名。
+- 保存 knowledge 时提交编辑后的名称，改名成功后替换列表旧项并显示成功提示。
+- 删除 knowledge 时移除列表项并清空编辑区。
+- 创建 skill 时允许 UI 不提供 ID，并由 Resource dependency 生成未占用 ID。
+- 导入 skill 时只在当前 Resource 类型为 skill 时触发，导入成功后更新列表、选中新资源并加载编辑区。
+- 导入 skill 的 ID 基于源目录名生成，并避开已有 skill ID。
+- skill 展示名从 `SKILL.md` frontmatter 的 `name` 字段读取，缺失时回退到目录 ID。
+- 保存 skill 时提交编辑后的 `SKILL.md`，更新展示名但不改变目录 ID。
+- 删除 skill 时只在当前 Resource 类型为 skill 且已有选中资源时触发，删除成功后移除列表项并清空编辑区。
+- 创建 tool 时允许 UI 不提供 ID 和名称，并由 Resource dependency 生成未占用 ID。
+- 删除 tool 时移除列表项并清空编辑区。
+- 保存 Resource 时提交编辑区内容；tool 同时提交 `tool.yaml` 和入口文件内容。
+- Resource 创建、保存和删除失败时清理对应进行中标记并展示错误。
+
+当前测试位置：
+
+```text
+AgentMacTests/AppShell/AgentFeatureTests.swift
+AgentMacTests/AppShell/AppResourceClientTests.swift
+AgentMacTests/AppShell/ResourceFeatureTests.swift
+AgentMacTests/AppShell/SessionFeatureTests.swift
+```
+
+主窗口 toolbar 打开 Agent Library 和 Resource Library 独立窗口属于 SwiftUI scene 编排，第一版通过
+macOS build 和手工 UI 验收覆盖；窗口内部的业务状态仍由 `AgentFeatureTests` 和
+`ResourceFeatureTests` 覆盖。
+
+手工验收仍覆盖：
+
+- 创建固定 coding agent session。
+- 启动 Runtime Host session。
 - 发送消息。
 - 流式展示回复。
+- 展示 failed/aborted 状态。
+- abort/reset 最小路径。
 
-稳定后再考虑 UI 自动化。
+2026-05-27 已用真实 Pi 和本地模型配置从 macOS UI 跑通固定 coding agent chat session。
+本地调试可把 Pi 配置放在 `~/Library/Application Support/AgentMac/Pi/settings.json` 和
+`~/Library/Application Support/AgentMac/Pi/auth.json`；其中明文 key 只允许作为第一阶段本地
+验证手段，不应提交到仓库。
+
+Agent 管理、资源管理和完整 Approval UI 后续实现时，再分别补 reducer 测试和必要的 UI 自动化。
+当前 Agent 管理 UI 已有 reducer 测试；资源选择和资源管理 UI 实现后继续补对应测试。
 
 ### Approval
 

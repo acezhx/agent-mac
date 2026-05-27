@@ -45,6 +45,104 @@ struct FileStoreTests {
         #expect(try store.readTextFile(at: "library/knowledge/policies/refund.md") == "退款规则")
     }
 
+    /// 验证删除普通文件会移除目标文件，并保留目录删除边界。
+    @Test func deleteFileRemovesOnlyRegularFiles() throws {
+        let (store, root) = makeStore()
+        defer { removeTemporaryRoot(root) }
+
+        try store.writeTextFile("session", to: "sessions/session-1.json")
+        try store.deleteFile(at: "sessions/session-1.json")
+
+        #expect(try !store.fileExists(at: "sessions/session-1.json"))
+
+        do {
+            try store.deleteFile(at: "sessions")
+            Issue.record("Expected directory deletion to be rejected.")
+        } catch let FileStoreError.fileNotFound(path) {
+            #expect(path == "sessions")
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
+
+    /// 验证删除目录会移除整棵子树，并拒绝把普通文件当目录删除。
+    @Test func deleteDirectoryRemovesTreeAndRejectsFiles() throws {
+        let (store, root) = makeStore()
+        defer { removeTemporaryRoot(root) }
+
+        try store.writeTextFile("skill", to: "library/skills/report-writing/SKILL.md")
+        try store.writeTextFile("guide", to: "library/skills/report-writing/references/guide.md")
+        try store.deleteDirectory(at: "library/skills/report-writing")
+
+        #expect(try !store.directoryExists(at: "library/skills/report-writing"))
+
+        try store.writeTextFile("not a directory", to: "library/skills/plain-file")
+        do {
+            try store.deleteDirectory(at: "library/skills/plain-file")
+            Issue.record("Expected file deletion through deleteDirectory to be rejected.")
+        } catch let FileStoreError.directoryNotFound(path) {
+            #expect(path == "library/skills/plain-file")
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
+
+    /// 验证目录移动会保留整棵子树，并拒绝覆盖已有目标目录。
+    @Test func moveDirectoryMovesTreeAndRejectsExistingDestination() throws {
+        let (store, root) = makeStore()
+        defer { removeTemporaryRoot(root) }
+
+        try store.writeTextFile("skill", to: "library/skills/draft-skill/SKILL.md")
+        try store.writeTextFile("guide", to: "library/skills/draft-skill/references/guide.md")
+        try store.moveDirectory(from: "library/skills/draft-skill", to: "library/skills/report-writing")
+
+        #expect(try !store.directoryExists(at: "library/skills/draft-skill"))
+        #expect(try store.readTextFile(at: "library/skills/report-writing/SKILL.md") == "skill")
+        #expect(try store.readTextFile(at: "library/skills/report-writing/references/guide.md") == "guide")
+
+        try store.writeTextFile("existing", to: "library/skills/existing-skill/SKILL.md")
+        do {
+            try store.moveDirectory(from: "library/skills/report-writing", to: "library/skills/existing-skill")
+            Issue.record("Expected existing destination to be rejected.")
+        } catch let FileStoreError.writeFailed(path, reason) {
+            #expect(path == "library/skills/existing-skill")
+            #expect(reason.contains("already exists"))
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
+
+    /// 验证外部目录可以递归复制到 app data 内，且不会覆盖已有目录。
+    @Test func copyDirectoryCopiesExternalTreeWithoutOverwriting() throws {
+        let (store, root) = makeStore()
+        let source = FileManager.default.temporaryDirectory
+            .appending(path: "AgentMac-FileStoreExternal-\(UUID().uuidString)", directoryHint: .isDirectory)
+        defer {
+            removeTemporaryRoot(root)
+            removeTemporaryRoot(source)
+        }
+
+        try store.initialize()
+        try createDirectory(source.appending(path: "references", directoryHint: .isDirectory))
+        try "skill".write(to: source.appending(path: "SKILL.md"), atomically: true, encoding: .utf8)
+        try "guide".write(to: source.appending(path: "references/guide.md"), atomically: true, encoding: .utf8)
+
+        try store.copyDirectory(from: source, to: "library/skills/imported-skill")
+
+        #expect(try store.readTextFile(at: "library/skills/imported-skill/SKILL.md") == "skill")
+        #expect(try store.readTextFile(at: "library/skills/imported-skill/references/guide.md") == "guide")
+
+        do {
+            try store.copyDirectory(from: source, to: "library/skills/imported-skill")
+            Issue.record("Expected existing destination to be rejected.")
+        } catch let FileStoreError.writeFailed(path, reason) {
+            #expect(path == "library/skills/imported-skill")
+            #expect(reason.contains("already exists"))
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
+
     /// 验证 YAML 读写入口会使用调用方提供的编码和解码闭包。
     ///
     /// FileStore 不绑定具体 YAML 库，因此测试只确认闭包参与读写流程。

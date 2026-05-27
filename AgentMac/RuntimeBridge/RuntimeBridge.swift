@@ -299,7 +299,8 @@ nonisolated final class RuntimeBridge: @unchecked Sendable {
     private let fileManager: FileManager
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
-    private let stateQueue = DispatchQueue(label: "cn.himo.AgentMac.RuntimeBridge.state")
+    // Runtime Host event 会唤醒用户发起的 session 操作，队列优先级需匹配等待方以避免优先级反转。
+    private let stateQueue = DispatchQueue(label: "cn.himo.AgentMac.RuntimeBridge.state", qos: .userInitiated)
     private var eventSemaphore = DispatchSemaphore(value: 0)
 
     private var process: Process?
@@ -475,9 +476,15 @@ nonisolated final class RuntimeBridge: @unchecked Sendable {
     ///   - sessionId: Runtime Host session id。
     ///   - content: 用户文本消息。
     ///   - timeout: 等待本轮消息完成的秒数。
+    ///   - onEvent: 每收到一条本轮 event 时调用；用于上层实时合并 streaming delta。
     /// - Returns: 本轮 command 对应的 Runtime Host events，包含 assistant delta 和 completed。
     /// - Throws: 进程未启动、写入失败、超时或 Runtime Host 返回 error event 时抛出错误。
-    func sendMessage(sessionId: String, content: String, timeout: TimeInterval = 10) throws -> [RuntimeEvent] {
+    func sendMessage(
+        sessionId: String,
+        content: String,
+        timeout: TimeInterval = 10,
+        onEvent: ((RuntimeEvent) throws -> Void)? = nil
+    ) throws -> [RuntimeEvent] {
         let command = RuntimeCommand(
             id: nextCommandID(),
             name: "sendMessage",
@@ -495,6 +502,7 @@ nonisolated final class RuntimeBridge: @unchecked Sendable {
         let deadline = Date().addingTimeInterval(timeout)
         while true {
             let event = try readMatchingEvent(replyTo: command.id, deadline: deadline)
+            try onEvent?(event)
             events.append(event)
             if event.name == "messageCompleted" {
                 return events

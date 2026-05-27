@@ -107,7 +107,7 @@ nonisolated enum FileStoreError: Error, Equatable {
 
     /// 文件或目录写入失败。
     ///
-    /// 该错误覆盖创建目录、写入文本文件和默认设置文件失败等持久化问题。
+    /// 该错误覆盖创建目录、写入文本文件、删除文件和默认设置文件失败等持久化问题。
     case writeFailed(path: String, reason: String)
 
     /// YAML 读取入口中的调用方解码失败。
@@ -286,6 +286,105 @@ nonisolated struct FileStore {
     func writeTextFile(_ contents: String, to relativePath: String) throws {
         let url = try resolveAppDataPath(relativePath)
         try writeText(contents, to: url)
+    }
+
+    /// 删除 app data 内的普通文件。
+    ///
+    /// 删除前会先执行安全路径解析，并确认目标是普通文件。该方法不删除目录，避免上层模块误删
+    /// 一整棵应用数据子树。
+    ///
+    /// - Parameter relativePath: 相对于应用数据根目录的文件路径。
+    /// - Throws: 文件不存在时抛出 `fileNotFound`；删除失败时抛出 `writeFailed`。
+    func deleteFile(at relativePath: String) throws {
+        let url = try resolveAppDataPath(relativePath)
+        guard fileExists(at: url) else {
+            throw FileStoreError.fileNotFound(path: relativePath)
+        }
+
+        do {
+            try fileManager.removeItem(at: url)
+        } catch {
+            throw FileStoreError.writeFailed(path: relativePath, reason: error.localizedDescription)
+        }
+    }
+
+    /// 删除 app data 内的目录及其全部内容。
+    ///
+    /// 删除前会先执行安全路径解析，并确认目标是目录。该方法用于上层模块删除目录型资源；
+    /// 普通文件仍应使用 `deleteFile(at:)`，避免调用方混淆资源边界。
+    ///
+    /// - Parameter relativePath: 相对于应用数据根目录的目录路径。
+    /// - Throws: 目录不存在时抛出 `directoryNotFound`；删除失败时抛出 `writeFailed`。
+    func deleteDirectory(at relativePath: String) throws {
+        let url = try resolveAppDataPath(relativePath)
+        guard directoryExists(at: url) else {
+            throw FileStoreError.directoryNotFound(path: relativePath)
+        }
+
+        do {
+            try fileManager.removeItem(at: url)
+        } catch {
+            throw FileStoreError.writeFailed(path: relativePath, reason: error.localizedDescription)
+        }
+    }
+
+    /// 移动 app data 内的目录及其全部内容。
+    ///
+    /// 该方法用于上层模块重命名目录型资源。源目录和目标目录都会通过 app data 安全边界解析；
+    /// 目标目录已存在时拒绝覆盖，避免重命名操作误改已有资源。
+    ///
+    /// - Parameters:
+    ///   - sourceRelativePath: 相对于应用数据根目录的源目录路径。
+    ///   - destinationRelativePath: 相对于应用数据根目录的目标目录路径。
+    /// - Throws: 源目录不存在、目标已存在或移动失败时抛出 FileStore 错误。
+    func moveDirectory(from sourceRelativePath: String, to destinationRelativePath: String) throws {
+        let source = try resolveAppDataPath(sourceRelativePath)
+        guard directoryExists(at: source) else {
+            throw FileStoreError.directoryNotFound(path: sourceRelativePath)
+        }
+
+        let destination = try resolveAppDataPath(destinationRelativePath)
+        guard source.path != destination.path else {
+            return
+        }
+        guard !fileManager.fileExists(atPath: destination.path) else {
+            throw FileStoreError.writeFailed(path: destinationRelativePath, reason: "Destination already exists.")
+        }
+
+        try createDirectory(destination.deletingLastPathComponent())
+        do {
+            try fileManager.moveItem(at: source, to: destination)
+        } catch {
+            throw FileStoreError.writeFailed(path: destinationRelativePath, reason: error.localizedDescription)
+        }
+    }
+
+    /// 将外部目录递归复制到 app data 内。
+    ///
+    /// 该方法用于导入用户选择的本地资源目录。目标路径仍通过 app data 安全边界解析；
+    /// 目标目录已存在时不会覆盖，避免导入操作误改已有资源。
+    ///
+    /// - Parameters:
+    ///   - sourceDirectory: app data 外部或内部的源目录 URL。
+    ///   - relativePath: 相对于应用数据根目录的目标目录路径。
+    /// - Throws: 源目录不存在时抛出 `directoryNotFound`；目标路径非法或复制失败时抛出 FileStore 错误。
+    func copyDirectory(from sourceDirectory: URL, to relativePath: String) throws {
+        let source = sourceDirectory.standardizedFileURL
+        guard directoryExists(at: source) else {
+            throw FileStoreError.directoryNotFound(path: source.path)
+        }
+
+        let destination = try resolveAppDataPath(relativePath)
+        guard !fileManager.fileExists(atPath: destination.path) else {
+            throw FileStoreError.writeFailed(path: relativePath, reason: "Destination already exists.")
+        }
+
+        try createDirectory(destination.deletingLastPathComponent())
+        do {
+            try fileManager.copyItem(at: source, to: destination)
+        } catch {
+            throw FileStoreError.writeFailed(path: relativePath, reason: error.localizedDescription)
+        }
     }
 
     /// 读取 YAML 文件文本，并把实际 YAML 解码委托给调用方。

@@ -304,7 +304,9 @@ Payload：
 
 ### toolApprovalRequested
 
-表示 runtime 请求工具审批。第一阶段 Swift 应默认拒绝或返回 unsupported。
+表示 runtime 请求工具审批。第一阶段 RuntimeHost 应默认禁用或拒绝需要审批的工具；如果仍
+上报该事件，Swift Session 只记录 denied/unsupported 决策，不把结果回传 RuntimeHost。完整
+Approval 阶段再补充等待用户审批和决策回传协议。
 
 Payload：
 

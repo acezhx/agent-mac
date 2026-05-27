@@ -175,9 +175,10 @@ FileStore
 - 调用 RuntimeBridge 启动会话。
 - 发送用户消息。
 - 追加 assistant 流式输出。
-- 保存基础 session 记录。
+- 保存完整 session 记录并支持冷启动恢复。
+- 提供 session 创建、加载、列表和删除管理层。
 - 预留工具审批事件扩展点。
-- 第一阶段对工具审批请求默认返回 denied/unsupported。
+- 第一阶段对工具审批请求记录默认 denied/unsupported 决策，不继续执行审批流程。
 
 验收标准：
 
@@ -185,7 +186,7 @@ FileStore
 - 用户消息能追加到消息列表。
 - assistant streaming delta 能合并展示。
 - runtime error 能让 session 进入 failed。
-- 工具审批请求不会导致 session 崩溃，会返回默认拒绝结果。
+- 工具审批请求不会导致 session 崩溃，会记录默认拒绝结果。
 
 ## 阶段 7：AppShell
 

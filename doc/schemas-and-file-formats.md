@@ -160,6 +160,95 @@ agents/<agent-id>/system.md
 - 不放入共享资源库。
 - 第一版允许为空，但 UI 应提示用户补充。
 
+## Session Record
+
+Session 记录保存为 JSON 文件，位于：
+
+```text
+sessions/<session-id>.json
+```
+
+第一版保存本地恢复需要的 session 元数据、完整消息历史、结构化错误和临时工具审批决策。
+`runtimeSessionID` 只用于诊断；应用冷启动恢复时不会重新附着旧 Runtime Host session。
+如果磁盘状态仍是 `running`，恢复时应降级为 `failed` 并关闭 streaming 消息。
+
+### 示例
+
+```json
+{
+  "agentID": "support-agent",
+  "agentName": "Support Agent",
+  "createdAt": "2026-05-27T03:00:00Z",
+  "error": null,
+  "errorMessage": null,
+  "id": "00000000-0000-0000-0000-000000000001",
+  "messageCount": 2,
+  "messages": [
+    {
+      "content": "你好",
+      "createdAt": "2026-05-27T03:00:01Z",
+      "id": "00000000-0000-0000-0000-000000000002",
+      "isStreaming": false,
+      "role": "user"
+    },
+    {
+      "content": "你好，有什么可以帮你？",
+      "createdAt": "2026-05-27T03:00:02Z",
+      "id": "00000000-0000-0000-0000-000000000003",
+      "isStreaming": false,
+      "role": "assistant"
+    }
+  ],
+  "runtimeSessionID": "ses_001",
+  "schemaVersion": 1,
+  "state": "idle",
+  "toolApprovals": [],
+  "updatedAt": "2026-05-27T03:00:05Z",
+  "workspacePath": "/Users/me/Project/demo"
+}
+```
+
+### 字段
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---:|---|
+| `schemaVersion` | integer | 是 | Session record schema 版本，当前为 `1`；旧 record 缺失时按 `0` 读取。 |
+| `id` | string | 是 | Swift 侧生成的本地 session id。 |
+| `runtimeSessionID` | string/null | 否 | Runtime Host session id；已中断或重置后可为空。 |
+| `agentID` | string | 是 | 传入 Session 的 `ResolvedAgentConfig.id`。 |
+| `agentName` | string | 是 | 传入 Session 的 `ResolvedAgentConfig.name`。 |
+| `workspacePath` | string | 是 | 会话工作区绝对路径。 |
+| `state` | enum | 是 | `idle`、`running`、`failed` 或 `aborted`。 |
+| `error` | object/null | 否 | failed 状态下的结构化错误。 |
+| `errorMessage` | string/null | 否 | failed 状态下的诊断信息。 |
+| `createdAt` | ISO-8601 string | 是 | 本地 session 创建时间。 |
+| `updatedAt` | ISO-8601 string | 是 | 最近一次状态、消息或诊断更新时间。 |
+| `messageCount` | integer | 是 | `messages` 数量摘要；旧 record 没有 `messages` 时保留旧值。 |
+| `messages` | object[] | 否 | 完整消息历史；旧 record 缺失时按空数组读取。 |
+| `toolApprovals` | object[] | 否 | 临时工具审批决策；完整 Approval 模块实现前只保存 denied/unsupported。 |
+
+`messages` 字段：
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---:|---|
+| `id` | string | 是 | Swift 侧生成的本地 message id。 |
+| `role` | enum | 是 | `user`、`assistant` 或 `diagnostic`。 |
+| `content` | string | 是 | 消息文本内容。 |
+| `createdAt` | ISO-8601 string | 是 | 消息创建时间。 |
+| `isStreaming` | boolean | 是 | assistant 消息是否仍在接收流式 delta；冷恢复时会归一化为 false。 |
+
+`error` 字段：
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---:|---|
+| `type` | string | 是 | `runtimeSessionMissing`、`runtimeSessionDetached`、`runtimeSessionAlreadyStarted`、`messageAlreadyInFlight`、`sessionRequiresReset`、`runtimeFailed`、`bridgeFailed`、`unexpectedRuntimeEvent` 或 `persistenceFailed`。 |
+| `message` | string | 是 | 诊断文本。 |
+| `code` | string/null | 否 | Runtime 错误码。 |
+| `recoverable` | boolean/null | 否 | Runtime 错误是否可恢复。 |
+| `path` | string/null | 否 | 持久化错误涉及的 app data 相对路径。 |
+| `reason` | string/null | 否 | 持久化错误底层原因。 |
+| `eventName` | string/null | 否 | 未识别 Runtime event 的名称。 |
+
 ## Knowledge 文件
 
 第一版 knowledge 是共享 Markdown 或纯文本文件。
@@ -194,8 +283,12 @@ library/skills/<skill-id>/
 
 - 目录名必须符合 ID 规则。
 - 必须包含 `SKILL.md`。
+- UI 展示名优先使用 `SKILL.md` 顶部 YAML frontmatter 的 `name` 字段；缺失或为空时回退到目录 ID。
+- 修改 `SKILL.md` 中的 `name` 只改变展示名，不重命名目录 ID。
+- UI 导入已有 skill 目录时，源目录顶层必须包含 `SKILL.md`。导入后目录会被复制到
+  `library/skills/<skill-id>/`，`<skill-id>` 由 UI 根据源目录名生成并保证不与现有 skill 冲突。
 - `references/` 可选。
-- `scripts/`、`assets/` 可后续增加。
+- `references/`、`scripts/`、`assets/` 等子目录在导入时会原样保留。
 - 第一版只做最小结构校验，不做完整 frontmatter 规范校验。
 
 ## tool.yaml
