@@ -1,0 +1,13 @@
+{
+  "platform": "darwin-arm64",
+  "node": {
+    "version": "v24.4.0",
+    "arch": "arm64",
+    "platform": "darwin"
+  },
+  "pi": {
+    "packageVersion": "0.75.5",
+    "package": "@earendil-works/pi-coding-agent"
+  },
+  "generatedAt": "2026-05-26T15:09:04.734Z"
+}

@@ -55,6 +55,35 @@ AgentMac.app/
 AgentMac/RuntimeHost/
 ```
 
+本地生成的 app 内置 runtime 放在：
+
+```text
+Vendor/Runtime/
+└─ darwin-arm64/
+   ├─ node/
+   │  └─ bin/
+   │     └─ node
+   ├─ pi/
+   │  └─ node_modules/
+   └─ manifest.json
+```
+
+规则：
+
+- `Vendor/Runtime/<platform>/` 是本地生成的第三方运行时资产，不放在 `AgentMac/` 源码目录下。
+- `Vendor/Runtime/<platform>/node/` 和 `Vendor/Runtime/<platform>/pi/node_modules/` 体积较大，
+  不提交到 GitHub；首次构建或更新 runtime 前手动运行 `scripts/update-vendored-runtime.mjs`。
+- `Vendor/Runtime/<platform>/manifest.json` 和说明文件可以提交，用于记录当前 runtime 版本。
+- `AgentMac/RuntimeHost/runtime-host.js` 是 Runtime Host 源码，构建 app 时复制到
+  `Contents/Resources/Runtime/host/runtime-host.js`。
+- Xcode 构建阶段只复制 `Vendor/Runtime/<platform>/`，不执行 `npm install` 或 Pi build。
+- 因为 `node_modules` 是递归第三方目录，AgentMac target 的 user script sandbox 需要关闭；
+  否则 Xcode 的脚本沙箱会拦截复制阶段对 runtime 树的递归读取。
+- `scripts/update-vendored-runtime.mjs` 会对内置 Node 去符号并 ad-hoc 签名，避免超过 GitHub
+  单文件限制；Xcode 复制阶段会对 app bundle 内的 Node 再按当前构建签名重签。
+- 更新 Node 或 Pi 时手动运行 `scripts/update-vendored-runtime.mjs --pi-repo /path/to/pi-main`，
+  生成后提交 manifest、脚本或文档变更，不提交 `node/` 和 `node_modules/`。
+
 建议支持两种模式：
 
 ```text
@@ -153,8 +182,8 @@ Swift 侧错误也可以写入：
 
 - Node 可执行文件必须有执行权限。
 - 如果包含 native `.node` 模块，签名和公证时需要一并处理。
-- app sandbox 和工具执行能力可能冲突。第一版优先面向 Developer ID 分发，不先承诺 Mac
-  App Store。
+- AgentMac 当前作为内部工具构建，不启用 App Sandbox；第一版优先面向 Developer ID 或内部
+  分发，不先承诺 Mac App Store。
 - Runtime Host 不应自修改 app bundle 内文件。
 
 ## 首次启动

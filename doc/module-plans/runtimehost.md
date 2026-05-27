@@ -70,20 +70,20 @@ RuntimeHost
 
 ## Checklist
 
-- [ ] 创建 `AgentMac/RuntimeHost/` 或 runtime host 源码目录。
-- [ ] 实现 stdin JSONL reader。
-- [ ] 实现 stdout JSONL writer。
-- [ ] 定义 command/event envelope。
-- [ ] 实现 `ping`。
-- [ ] 实现 mock `startSession`。
-- [ ] 实现 mock `sendMessage` streaming。
-- [ ] 实现 `abortSession` 占位。
+- [x] 创建 `AgentMac/RuntimeHost/` 或 runtime host 源码目录。
+- [x] 实现 stdin JSONL reader。
+- [x] 实现 stdout JSONL writer。
+- [x] 定义 command/event envelope。
+- [x] 实现 `ping`。
+- [x] 实现 mock `startSession`。
+- [x] 实现 mock `sendMessage` streaming。
+- [x] 实现 `abortSession` 占位。
 - [ ] 接入固定 Pi coding agent。
-- [ ] 支持 `fixedCodingAgent` session mode。
+- [x] 支持 `fixedCodingAgent` session mode。
 - [ ] 将 Pi events 转为稳定 event。
 - [ ] 实现默认审批拒绝。
-- [ ] 实现协议错误处理。
-- [ ] 编写 RuntimeHost 命令行验证脚本或测试。
+- [x] 实现协议错误处理。
+- [x] 编写 RuntimeHost 命令行验证脚本或测试。
 
 ## 验收标准
 

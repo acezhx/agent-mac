@@ -38,6 +38,11 @@ playground.xcworkspace
 # .swiftpm
 
 .build/
+.build-runtime/
+
+# Vendored runtime payloads are generated locally and are too large for GitHub.
+Vendor/Runtime/*/node/
+Vendor/Runtime/*/pi/node_modules/
 
 # CocoaPods
 #
