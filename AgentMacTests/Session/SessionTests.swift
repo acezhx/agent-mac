@@ -350,8 +350,8 @@ struct SessionTests {
         #expect(session.messages[1].isStreaming == false)
     }
 
-    /// 验证工具审批请求会走默认 unsupported 决策，不会让消息发送崩溃。
-    @Test func toolApprovalRequestUsesDefaultUnsupportedDecision() throws {
+    /// 验证工具审批请求会走默认 denied 决策并回传 Runtime Host，不会让消息发送崩溃。
+    @Test func toolApprovalRequestUsesDefaultDeniedDecision() throws {
         let runtime = MockSessionRuntime()
         runtime.sendEvents = [
             runtimeEvent(
@@ -373,8 +373,82 @@ struct SessionTests {
         try session.sendUserMessage("需要工具")
 
         #expect(session.state == .idle)
-        #expect(session.toolApprovalDecisions == [.unsupported(reason: "Tool approval is not supported yet.")])
+        #expect(session.toolApprovalDecisions == [
+            .denied(reason: "Tool approval was denied because no interactive approval handler is configured."),
+        ])
+        #expect(runtime.approvedToolCalls == [
+            .init(
+                sessionID: "ses_mock",
+                toolCallID: "tool_001",
+                decision: .denied(
+                    reason: "Tool approval was denied because no interactive approval handler is configured."
+                )
+            ),
+        ])
         #expect(session.messages.contains { $0.role == .diagnostic && $0.content.contains("bash") })
+        #expect(session.messages.last?.role == .assistant)
+        #expect(session.messages.last?.content == "done")
+    }
+
+    /// 验证交互式工具审批会暂停消息流程，直到 UI 处理器提交 allow 决策。
+    @Test func toolApprovalRequestWaitsForInteractiveDecision() async throws {
+        let approvalHandler = InteractiveToolApprovalHandler()
+        let runtime = MockSessionRuntime()
+        runtime.sendEvents = [
+            runtimeEvent(
+                name: "toolApprovalRequested",
+                payload: .object([
+                    "toolCallId": .string("tool_001"),
+                    "toolName": .string("bash"),
+                    "risk": .string("shell"),
+                    "summary": .string("Run shell command"),
+                    "details": .object([
+                        "command": .string("ls -la"),
+                    ]),
+                ])
+            ),
+            runtimeEvent(name: "assistantDelta", payload: .object(["text": .string("done")])),
+            runtimeEvent(name: "messageCompleted"),
+        ]
+        let (session, _, root, _) = try makeSession(runtime: runtime, approvalHandler: approvalHandler)
+        defer { removeTemporaryRoot(root) }
+
+        try session.start()
+        let sendTask = Task.detached {
+            try session.sendUserMessage("需要工具")
+        }
+
+        do {
+            try await waitUntil { session.pendingToolApprovalRequest != nil }
+
+            let pendingRequest = try #require(session.pendingToolApprovalRequest)
+            #expect(pendingRequest.toolCallID == "tool_001")
+            #expect(pendingRequest.toolName == "bash")
+            #expect(pendingRequest.details == [
+                .init(key: "command", value: "ls -la"),
+            ])
+            #expect(runtime.approvedToolCalls.isEmpty)
+
+            approvalHandler.submit(.allowed(reason: "Approved by test."), for: "tool_001")
+            try await sendTask.value
+        } catch {
+            approvalHandler.submit(.denied(reason: "Test cleanup."), for: "tool_001")
+            _ = try? await sendTask.value
+            throw error
+        }
+
+        #expect(session.pendingToolApprovalRequest == nil)
+        #expect(session.toolApprovalDecisions == [
+            .allowed(reason: "Approved by test."),
+        ])
+        #expect(runtime.approvedToolCalls == [
+            .init(
+                sessionID: "ses_mock",
+                toolCallID: "tool_001",
+                decision: .allowed(reason: "Approved by test.")
+            ),
+        ])
+        #expect(session.state == .idle)
         #expect(session.messages.last?.role == .assistant)
         #expect(session.messages.last?.content == "done")
     }
@@ -530,11 +604,13 @@ struct SessionTests {
     ///
     /// - Parameters:
     ///   - runtime: mock RuntimeBridge。
+    ///   - approvalHandler: 工具审批处理器。
     ///   - id: 本地 session id。
     ///   - logHandler: Session 内部诊断日志处理器。
     /// - Returns: ChatSession、FileStore、临时根目录和 mock RuntimeBridge。
     private func makeSession(
         runtime: MockSessionRuntime = MockSessionRuntime(),
+        approvalHandler: any ToolApprovalHandling = DefaultToolApprovalHandler(),
         id: UUID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!,
         logHandler: @escaping (String) -> Void = { _ in }
     ) throws -> (ChatSession, FileStore, URL, MockSessionRuntime) {
@@ -558,6 +634,7 @@ struct SessionTests {
             agentConfig: config,
             fileStore: store,
             runtimeBridge: runtime,
+            approvalHandler: approvalHandler,
             id: id,
             dateProvider: { Date(timeIntervalSince1970: 1) },
             logHandler: logHandler
@@ -638,10 +715,43 @@ struct SessionTests {
     private func removeTemporaryRoot(_ root: URL) {
         try? FileManager.default.removeItem(at: root)
     }
+
+    /// 等待异步条件满足。
+    ///
+    /// - Parameter condition: 每轮轮询时检查的条件。
+    private func waitUntil(_ condition: @escaping () -> Bool) async throws {
+        for _ in 0..<100 {
+            if condition() {
+                return
+            }
+
+            try await Task.sleep(for: .milliseconds(10))
+        }
+
+        throw SessionTestError.conditionTimeout
+    }
+}
+
+/// Session 测试内部错误。
+private enum SessionTestError: Error {
+    /// 等待条件超时。
+    case conditionTimeout
 }
 
 /// Session 测试使用的 RuntimeBridge mock。
 private final class MockSessionRuntime: SessionRuntimeBridging {
+    /// 工具审批回传记录。
+    struct ApprovedToolCall: Equatable {
+        /// Runtime Host session id。
+        let sessionID: String
+
+        /// Runtime Host 工具调用 id。
+        let toolCallID: String
+
+        /// 回传决策。
+        let decision: ToolApprovalDecision
+    }
+
     /// startSession 返回的 Runtime Host session id。
     var startResult = "ses_mock"
 
@@ -674,6 +784,9 @@ private final class MockSessionRuntime: SessionRuntimeBridging {
 
     /// abortSession 收到的 session ids。
     private(set) var abortedSessionIDs: [String] = []
+
+    /// approveToolCall 收到的回传记录。
+    private(set) var approvedToolCalls: [ApprovedToolCall] = []
 
     /// 启动 mock Runtime Host session。
     ///
@@ -737,6 +850,35 @@ private final class MockSessionRuntime: SessionRuntimeBridging {
             sessionId: sessionId,
             name: "sessionAborted",
             payload: .object([:])
+        )
+    }
+
+    /// 记录工具审批回传。
+    ///
+    /// - Parameters:
+    ///   - sessionId: Runtime Host session id。
+    ///   - toolCallID: Runtime Host 工具调用 id。
+    ///   - decision: 审批决策。
+    ///   - timeout: 等待秒数。
+    /// - Returns: toolApprovalResolved event。
+    @discardableResult
+    func approveToolCall(
+        sessionId: String,
+        toolCallID: String,
+        decision: ToolApprovalDecision,
+        timeout: TimeInterval
+    ) throws -> RuntimeEvent {
+        approvedToolCalls.append(.init(sessionID: sessionId, toolCallID: toolCallID, decision: decision))
+        return RuntimeEvent(
+            type: "event",
+            id: "evt_toolApprovalResolved",
+            replyTo: "cmd_mock_approval",
+            sessionId: sessionId,
+            name: "toolApprovalResolved",
+            payload: .object([
+                "toolCallId": .string(toolCallID),
+                "decision": .string(decision.runtimeDecision),
+            ])
         )
     }
 }

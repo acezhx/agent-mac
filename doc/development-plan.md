@@ -177,8 +177,7 @@ FileStore
 - 追加 assistant 流式输出。
 - 保存完整 session 记录并支持冷启动恢复。
 - 提供 session 创建、加载、列表和删除管理层。
-- 预留工具审批事件扩展点。
-- 第一阶段对工具审批请求记录默认 denied/unsupported 决策，不继续执行审批流程。
+- 预留工具审批事件扩展点；Approval 模块接入后等待 UI 决策并回传 Runtime Host。
 
 验收标准：
 
@@ -186,7 +185,7 @@ FileStore
 - 用户消息能追加到消息列表。
 - assistant streaming delta 能合并展示。
 - runtime error 能让 session 进入 failed。
-- 工具审批请求不会导致 session 崩溃，会记录默认拒绝结果。
+- 工具审批请求不会导致 session 崩溃，会记录审批结果。
 
 ## 阶段 7：AppShell
 
@@ -296,5 +295,5 @@ FileStore
 - 每个模块完成时都要有可运行或可测试的验收点。
 - 先跑通固定 Pi coding agent，再做完整可配置 Agent。
 - 先做文件型配置，不引入数据库。
-- 先默认拒绝工具审批请求，基础 chat session 跑通后再实现完整审批。
+- 基础 chat session 先默认拒绝工具审批请求；Approval 阶段补上 UI 确认和回传闭环。
 - 服务层先行，UI 后接入。

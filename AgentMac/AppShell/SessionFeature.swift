@@ -37,6 +37,12 @@ struct SessionFeature {
         /// 是否正在重置 session。
         var isResettingSession: Bool
 
+        /// 是否正在提交工具审批决策。
+        var isResolvingToolApproval: Bool
+
+        /// 已由 UI 提交、但快照尚未清空的工具调用 id。
+        var submittedToolApprovalIDs: Set<String>
+
         /// 创建会话页面状态。
         ///
         /// - Parameter workspacePath: 默认 workspace 路径。
@@ -50,6 +56,8 @@ struct SessionFeature {
             self.isSendingMessage = false
             self.isAbortingSession = false
             self.isResettingSession = false
+            self.isResolvingToolApproval = false
+            self.submittedToolApprovalIDs = []
         }
 
         /// 当前消息列表。
@@ -64,6 +72,12 @@ struct SessionFeature {
                 || isSendingMessage
                 || isAbortingSession
                 || isResettingSession
+                || isResolvingToolApproval
+        }
+
+        /// 当前等待用户确认的工具审批请求。
+        var pendingToolApprovalRequest: ToolApprovalRequest? {
+            snapshot?.pendingToolApprovalRequest
         }
 
         /// 是否可以创建新的本地 session。
@@ -129,6 +143,9 @@ struct SessionFeature {
             if isStartingSession {
                 return "Starting"
             }
+            if pendingToolApprovalRequest != nil {
+                return "Awaiting Approval"
+            }
             if isSendingMessage {
                 return "Streaming"
             }
@@ -138,7 +155,6 @@ struct SessionFeature {
             if isResettingSession {
                 return "Resetting"
             }
-
             guard let snapshot else {
                 return "No Session"
             }
@@ -159,6 +175,10 @@ struct SessionFeature {
         var statusDetail: String {
             guard let snapshot else {
                 return "Create a fixed coding agent session to begin."
+            }
+
+            if let pendingToolApprovalRequest {
+                return "\(pendingToolApprovalRequest.toolName): \(pendingToolApprovalRequest.summary)"
             }
 
             switch snapshot.state {
@@ -236,6 +256,21 @@ struct SessionFeature {
 
         /// 快照订阅失败。
         case snapshotObservationFailed(AppSessionClientError)
+
+        /// 用户批准工具请求。
+        case allowToolApprovalButtonTapped(String)
+
+        /// 用户拒绝工具请求。
+        case denyToolApprovalButtonTapped(String)
+
+        /// 审批弹窗关闭但没有显式提交选择。
+        case toolApprovalSheetDismissed(String)
+
+        /// 工具审批决策提交成功。
+        case resolveToolApprovalSucceeded(String)
+
+        /// 工具审批决策提交失败。
+        case resolveToolApprovalFailed(AppSessionClientError)
     }
 
     private nonisolated enum CancelID: Hashable, Sendable {
@@ -386,6 +421,10 @@ struct SessionFeature {
 
             case let .snapshotUpdated(snapshot):
                 state.snapshot = snapshot
+                if snapshot.pendingToolApprovalRequest == nil {
+                    state.submittedToolApprovalIDs.removeAll()
+                    state.isResolvingToolApproval = false
+                }
                 if case let .failed(error) = snapshot.state {
                     state.errorMessage = error.localizedDescription
                 }
@@ -394,6 +433,65 @@ struct SessionFeature {
             case let .snapshotObservationFailed(error):
                 state.errorMessage = error.message
                 return .none
+
+            case let .allowToolApprovalButtonTapped(toolCallID):
+                return resolveToolApproval(
+                    state: &state,
+                    toolCallID: toolCallID,
+                    decision: .allowed(reason: "Approved by user.")
+                )
+
+            case let .denyToolApprovalButtonTapped(toolCallID):
+                return resolveToolApproval(
+                    state: &state,
+                    toolCallID: toolCallID,
+                    decision: .denied(reason: "Denied by user.")
+                )
+
+            case let .toolApprovalSheetDismissed(toolCallID):
+                guard !state.submittedToolApprovalIDs.contains(toolCallID) else {
+                    return .none
+                }
+                return resolveToolApproval(
+                    state: &state,
+                    toolCallID: toolCallID,
+                    decision: .denied(reason: "Approval UI was dismissed.")
+                )
+
+            case let .resolveToolApprovalSucceeded(toolCallID):
+                state.isResolvingToolApproval = false
+                state.submittedToolApprovalIDs.insert(toolCallID)
+                return .none
+
+            case let .resolveToolApprovalFailed(error):
+                state.isResolvingToolApproval = false
+                state.errorMessage = error.message
+                return .none
+            }
+        }
+    }
+
+    private func resolveToolApproval(
+        state: inout State,
+        toolCallID: String,
+        decision: ToolApprovalDecision
+    ) -> Effect<Action> {
+        guard state.pendingToolApprovalRequest?.toolCallID == toolCallID,
+              !state.isResolvingToolApproval,
+              !state.submittedToolApprovalIDs.contains(toolCallID)
+        else {
+            return .none
+        }
+
+        state.isResolvingToolApproval = true
+        state.errorMessage = nil
+        @Dependency(AppSessionClient.self) var appSessionClient
+        return .run { send in
+            do {
+                try await appSessionClient.resolveToolApproval(toolCallID, decision)
+                await send(.resolveToolApprovalSucceeded(toolCallID))
+            } catch {
+                await send(.resolveToolApprovalFailed(AppSessionClientError(error)))
             }
         }
     }

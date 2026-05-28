@@ -21,6 +21,9 @@ nonisolated struct AppSessionClient: Sendable {
     /// 重置当前本地 session。
     var resetSession: @Sendable () async throws -> Void
 
+    /// 提交当前工具审批决策。
+    var resolveToolApproval: @Sendable (_ toolCallID: String, _ decision: ToolApprovalDecision) async throws -> Void
+
     /// 订阅当前 chat session 的快照变化。
     var snapshots: @Sendable () async throws -> AsyncStream<ChatSessionSnapshot>
 }
@@ -60,7 +63,8 @@ extension AppSessionClientError: LocalizedError {
 extension AppSessionClient: DependencyKey {
     /// App 运行时使用的真实 dependency。
     static let liveValue: AppSessionClient = {
-        let controller = LiveAppSessionController()
+        let approvalHandler = InteractiveToolApprovalHandler()
+        let controller = LiveAppSessionController(approvalHandler: approvalHandler)
         return AppSessionClient(
             createSession: { workspacePath in
                 try await controller.createSession(workspacePath: workspacePath)
@@ -76,6 +80,9 @@ extension AppSessionClient: DependencyKey {
             },
             resetSession: {
                 try await controller.resetSession()
+            },
+            resolveToolApproval: { toolCallID, decision in
+                approvalHandler.submit(decision, for: toolCallID)
             },
             snapshots: {
                 try await controller.snapshots()
@@ -100,6 +107,9 @@ extension AppSessionClient: DependencyKey {
         resetSession: {
             throw AppSessionClientError("AppSessionClient.resetSession is not implemented for this test.")
         },
+        resolveToolApproval: { _, _ in
+            throw AppSessionClientError("AppSessionClient.resolveToolApproval is not implemented for this test.")
+        },
         snapshots: {
             AsyncStream { continuation in
                 continuation.finish()
@@ -122,6 +132,14 @@ extension DependencyValues {
 private actor LiveAppSessionController {
     private var storage: LiveStorage?
     private var currentSession: ChatSession?
+    private let approvalHandler: InteractiveToolApprovalHandler
+
+    /// 创建 live session 控制器。
+    ///
+    /// - Parameter approvalHandler: AppShell 提交 UI 决策的交互式审批处理器。
+    init(approvalHandler: InteractiveToolApprovalHandler) {
+        self.approvalHandler = approvalHandler
+    }
 
     /// 创建固定 coding agent 的本地 session。
     ///
@@ -186,7 +204,8 @@ private actor LiveAppSessionController {
         let manager = ChatSessionManager(
             fileStore: fileStore,
             agentConfigResolver: FixedCodingAgentResolver(),
-            runtimeBridge: runtimeBridge
+            runtimeBridge: runtimeBridge,
+            approvalHandler: approvalHandler
         )
         let storage = LiveStorage(
             fileStore: fileStore,

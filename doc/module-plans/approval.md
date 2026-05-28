@@ -70,22 +70,22 @@ Approval
 
 ## Checklist
 
-- [ ] 创建 `AgentMac/Approval/` 目录。
-- [ ] 从 Session/RuntimeBridge 迁移临时审批类型。
-- [ ] 定义 `ToolApprovalRequest`。
-- [ ] 定义 `ToolApprovalDecision`。
-- [ ] 定义 `PermissionPolicy` 解释逻辑。
-- [ ] 实现 `ApprovalService`。
-- [ ] 支持 allow/ask/deny。
-- [ ] 支持 shell 请求。
-- [ ] 支持 edit/write 请求。
-- [ ] 支持 network 请求。
-- [ ] 支持 secrets 请求。
-- [ ] 实现审批 UI。
-- [ ] 通过 AppShell/TCA 接入审批 UI。
-- [ ] 将审批结果回传 Session。
-- [ ] 将审批结果回传 Runtime Host。
-- [ ] 编写 Approval 单元测试。
+- [x] 创建 `AgentMac/Approval/` 目录。
+- [x] 从 Session/RuntimeBridge 迁移临时审批类型。
+- [x] 定义 `ToolApprovalRequest`。
+- [x] 定义 `ToolApprovalDecision`。
+- [x] 在 `ApprovalService` 中实现权限策略解释逻辑。
+- [x] 实现 `ApprovalService`。
+- [x] 支持 allow/ask/deny。
+- [x] 支持 shell 请求。
+- [x] 支持 edit/write 请求。
+- [x] 支持 network 请求。
+- [x] 支持 secrets 请求。
+- [x] 实现审批 UI。
+- [x] 通过 AppShell/TCA 接入审批 UI。
+- [x] 将审批结果回传 Session。
+- [x] 将审批结果回传 Runtime Host。
+- [x] 编写 Approval 单元测试。
 - [ ] 手工验证批准和拒绝路径。
 
 ## 验收标准

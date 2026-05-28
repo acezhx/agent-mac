@@ -55,7 +55,35 @@ private struct SessionView: View {
                 composer
             }
             .background(Color(nsColor: .windowBackgroundColor))
+            .sheet(item: pendingToolApprovalBinding) { request in
+                ToolApprovalSheet(
+                    request: request,
+                    isResolving: store.isResolvingToolApproval,
+                    onAllow: {
+                        store.send(.allowToolApprovalButtonTapped(request.toolCallID))
+                    },
+                    onDeny: {
+                        store.send(.denyToolApprovalButtonTapped(request.toolCallID))
+                    }
+                )
+            }
         }
+    }
+
+    private var pendingToolApprovalBinding: Binding<ToolApprovalRequest?> {
+        Binding(
+            get: {
+                store.pendingToolApprovalRequest
+            },
+            set: { newValue in
+                guard newValue == nil,
+                      let toolCallID = store.pendingToolApprovalRequest?.toolCallID
+                else {
+                    return
+                }
+                store.send(.toolApprovalSheetDismissed(toolCallID))
+            }
+        )
     }
 
     private var header: some View {
@@ -275,6 +303,82 @@ private struct MessageRow: View {
         case .diagnostic:
             Color.orange.opacity(0.1)
         }
+    }
+}
+
+/// 工具审批确认视图。
+private struct ToolApprovalSheet: View {
+    /// 审批请求。
+    let request: ToolApprovalRequest
+
+    /// 是否正在提交决策。
+    let isResolving: Bool
+
+    /// 批准回调。
+    let onAllow: () -> Void
+
+    /// 拒绝回调。
+    let onDeny: () -> Void
+
+    /// 视图内容。
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(alignment: .center, spacing: 10) {
+                Image(systemName: "shield.lefthalf.filled")
+                    .font(.title2)
+                    .foregroundStyle(.orange)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(request.toolName)
+                        .font(.headline)
+                    Text(request.summary)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+                Spacer()
+            }
+
+            LabeledContent("Risk", value: request.risk.rawValue)
+            LabeledContent("Tool Call", value: request.toolCallID)
+
+            if !request.details.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Details")
+                        .font(.subheadline.weight(.semibold))
+                    ForEach(request.details) { detail in
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(detail.key)
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                            Text(detail.value)
+                                .font(.system(.body, design: .monospaced))
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+                }
+            }
+
+            HStack {
+                Spacer()
+                Button(role: .cancel) {
+                    onDeny()
+                } label: {
+                    Label("Deny", systemImage: "xmark.circle")
+                }
+                .disabled(isResolving)
+
+                Button {
+                    onAllow()
+                } label: {
+                    Label("Allow", systemImage: "checkmark.circle.fill")
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(isResolving)
+            }
+        }
+        .padding(20)
+        .frame(width: 460)
+        .interactiveDismissDisabled(isResolving)
     }
 }
 

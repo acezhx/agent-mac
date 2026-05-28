@@ -44,6 +44,108 @@ struct RuntimeBridgeTests {
         #expect(aborted.name == "sessionAborted")
     }
 
+    /// 验证 RuntimeBridge 能把工具审批决策回传 Runtime Host，并让当前消息完成。
+    @Test func approveToolCallRoundTripsThroughRuntimeHost() throws {
+        let (bridge, root) = try makeBridge(environment: ["AGENTMAC_RUNTIMEHOST_MOCK_TOOL_APPROVAL": "1"])
+        defer {
+            bridge.stop()
+            removeTemporaryRoot(root)
+        }
+
+        try bridge.start()
+        let sessionId = try bridge.startSession(workspacePath: root.path)
+        let events = try bridge.sendMessage(
+            sessionId: sessionId,
+            content: "ls -la",
+            onEvent: { event in
+                if event.name == "toolApprovalRequested" {
+                    let toolCallID = try #require(event.payload?["toolCallId"]?.stringValue)
+                    let approvalEvent = try bridge.approveToolCall(
+                        sessionId: sessionId,
+                        toolCallID: toolCallID,
+                        decision: .allowed(reason: "Approved in test.")
+                    )
+                    #expect(approvalEvent.name == "toolApprovalResolved")
+                    #expect(approvalEvent.payload?["decision"]?.stringValue == "approved")
+                }
+            }
+        )
+
+        #expect(events.map(\.name).contains("toolApprovalRequested"))
+        #expect(events.last?.name == "messageCompleted")
+    }
+
+    /// 验证嵌套 approveToolCall 读到外层 sendMessage event 时不会丢弃外层 event。
+    @Test func nestedApprovalPreservesOuterSendEvents() throws {
+        let root = temporaryRoot()
+        defer { removeTemporaryRoot(root) }
+        let script = root.appending(path: "nested-approval-events.js", directoryHint: .notDirectory)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try """
+        const readline = require('node:readline');
+        const rl = readline.createInterface({ input: process.stdin });
+        let nextEventNumber = 1;
+        let activeSendReplyTo = null;
+
+        function writeEvent(replyTo, sessionId, name, payload = {}) {
+          process.stdout.write(JSON.stringify({
+            type: 'event',
+            id: `evt_${String(nextEventNumber++).padStart(3, '0')}`,
+            replyTo,
+            sessionId,
+            name,
+            payload
+          }) + '\\n');
+        }
+
+        rl.on('line', (line) => {
+          const command = JSON.parse(line);
+          if (command.name === 'startSession') {
+            writeEvent(command.id, 'ses_001', 'sessionStarted', {});
+          } else if (command.name === 'sendMessage') {
+            activeSendReplyTo = command.id;
+            writeEvent(command.id, 'ses_001', 'toolApprovalRequested', {
+              toolCallId: 'tool_001',
+              toolName: 'bash',
+              risk: 'shell',
+              summary: 'Run shell command'
+            });
+          } else if (command.name === 'approveToolCall') {
+            writeEvent(activeSendReplyTo, 'ses_001', 'assistantDelta', { text: 'after approval' });
+            writeEvent(activeSendReplyTo, 'ses_001', 'messageCompleted', {});
+            writeEvent(command.id, 'ses_001', 'toolApprovalResolved', {
+              toolCallId: 'tool_001',
+              decision: command.payload.decision
+            });
+          }
+        });
+
+        setInterval(() => {}, 10000);
+        """.write(to: script, atomically: true, encoding: .utf8)
+
+        let bridge = RuntimeBridge(configuration: try makeConfiguration(root: root, hostScriptURL: script))
+        defer { bridge.stop() }
+
+        try bridge.start()
+        let sessionId = try bridge.startSession(workspacePath: root.path)
+        let events = try bridge.sendMessage(
+            sessionId: sessionId,
+            content: "ls -la",
+            onEvent: { event in
+                if event.name == "toolApprovalRequested" {
+                    _ = try bridge.approveToolCall(
+                        sessionId: sessionId,
+                        toolCallID: "tool_001",
+                        decision: .allowed(reason: "Approved in test.")
+                    )
+                }
+            }
+        )
+
+        #expect(events.map(\.name) == ["toolApprovalRequested", "assistantDelta", "messageCompleted"])
+        #expect(events[1].payload?["text"]?.stringValue == "after approval")
+    }
+
     /// 验证 stdout 中的非法 JSONL event 会被映射为结构化解析错误。
     @Test func invalidRuntimeEventJSONReportsDecodeError() throws {
         let root = temporaryRoot()
@@ -154,7 +256,7 @@ struct RuntimeBridgeTests {
     /// 创建指向仓库 RuntimeHost 的测试 RuntimeBridge。
     ///
     /// - Returns: RuntimeBridge 和测试结束后需要删除的临时根目录。
-    private func makeBridge() throws -> (RuntimeBridge, URL) {
+    private func makeBridge(environment: [String: String] = [:]) throws -> (RuntimeBridge, URL) {
         let root = temporaryRoot()
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let configuration = try makeConfiguration(
@@ -163,7 +265,7 @@ struct RuntimeBridgeTests {
             environment: [
                 "AGENTMAC_RUNTIMEHOST_USE_MOCK_PI": "1",
                 "AGENTMAC_PI_AGENT_DIR": root.appending(path: "Pi", directoryHint: .isDirectory).path,
-            ]
+            ].merging(environment) { _, new in new }
         )
         return (RuntimeBridge(configuration: configuration), root)
     }

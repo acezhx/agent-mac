@@ -12,9 +12,10 @@ Session
   -> AgentLibrary
   -> FileStore
   -> RuntimeBridge
+  -> Approval
 ```
 
-第一阶段不依赖完整 `Approval`。遇到工具审批请求时使用默认拒绝策略。
+Session 依赖 Approval 的纯服务和处理器协议，不依赖 TCA 或 SwiftUI。
 
 ## 需要开发的功能
 
@@ -75,8 +76,10 @@ Session
 
 ### 审批扩展点
 
-- 定义 `ToolApprovalRequest` 和 `ToolApprovalDecision` 的临时边界类型。
-- 第一阶段默认返回 denied/unsupported。
+- 接收 Runtime Host 的 `toolApprovalRequested`。
+- 根据 Approval 模块解释 allow/ask/deny。
+- ask 策略下通过 snapshot 暴露 pending request，等待上层提交用户决策。
+- 将 approved/denied 通过 RuntimeBridge 回传 Runtime Host。
 - 不让审批请求导致 session 崩溃。
 
 ## Checklist
@@ -86,8 +89,8 @@ Session
 - [x] 定义 `ChatMessage`。
 - [x] 定义 `SessionState`。
 - [x] 定义 `SessionError`。
-- [x] 定义临时 `ToolApprovalRequest`。
-- [x] 定义临时 `ToolApprovalDecision`。
+- [x] 接入 Approval 模块的 `ToolApprovalRequest`。
+- [x] 接入 Approval 模块的 `ToolApprovalDecision`。
 - [x] 实现创建 session。
 - [x] 实现启动 session。
 - [x] 实现发送用户消息。
@@ -97,7 +100,7 @@ Session
 - [x] 实现 abort。
 - [x] 实现生命周期边界错误。
 - [x] 实现 abort 后迟到 event 处理。
-- [x] 实现默认审批拒绝。
+- [x] 实现审批决策回传 Runtime Host。
 - [x] 实现 session 记录保存。
 - [x] 实现完整 session record。
 - [x] 实现 `SessionStore`。
@@ -109,7 +112,8 @@ Session
 
 - `ChatSession` 接收 `ResolvedAgentConfig`、`FileStore` 和 `RuntimeBridge` 边界协议，当前按协议启动
   `fixedCodingAgent` session，并把 workspace 传给 Runtime Host。
-- `ChatSessionSnapshot` 通过 `AsyncStream` 暴露状态和消息快照，供后续 AppShell/TCA 订阅。
+- `ChatSessionSnapshot` 通过 `AsyncStream` 暴露状态、消息和 pending 工具审批请求，供 AppShell/TCA
+  订阅。
 - `ChatMessage` 支持 user、assistant 和 diagnostic 三类消息；assistant delta 会合并到当前 streaming
   assistant 消息，`messageCompleted` 后结束 streaming 并回到 idle。
 - RuntimeBridge error 会映射为 `SessionError`，session 进入 failed 并追加 diagnostic 消息。
@@ -121,9 +125,10 @@ Session
 - `sessionAborted` 后迟到的 Runtime events 会被忽略，避免 aborted 终态被后续 delta 或 completed 覆盖。
 - 未知非 error Runtime events 按 Runtime 协议记录日志并忽略，避免新增 event 破坏旧 Session。
 - `reset()` 会写入重置后的完整 record；持久化失败时抛出结构化错误，并保留原内存状态。
-- 临时 `ToolApprovalRequest`、`ToolApprovalDecision` 和 `ToolApprovalHandling` 保留 Approval 扩展点；
-  默认实现返回 unsupported，并写入 diagnostic，不接 UI。
-- 完整 session record 保存为 `sessions/<session-id>.json`，包含 session 元数据、消息历史、结构化错误和临时
+- `ChatSession` 收到 `toolApprovalRequested` 后会通过 `ApprovalService` 自动处理 allow/deny；
+  ask 策略下设置 pending request、等待 `ToolApprovalHandling` 返回，再调用 RuntimeBridge
+  `approveToolCall`。
+- 完整 session record 保存为 `sessions/<session-id>.json`，包含 session 元数据、消息历史、结构化错误和
   工具审批决策，并兼容旧版无 `messages` 的基础 record。
 - `SessionStore` 负责 record 的 JSON 编解码、列表摘要和删除。
 - `ChatSessionManager` 负责创建、缓存、恢复、列出和删除 session；恢复时通过 Agent 配置解析边界重新取得
@@ -152,7 +157,7 @@ xcodebuild test -scheme AgentMac -destination 'platform=macOS' -only-testing:Age
 - 上一轮消息未完成时再次 send 会返回结构化错误，不会追加新消息。
 - failed/aborted 状态继续 send 会返回结构化错误，调用方需要显式 reset。
 - abort 后迟到的 assistant delta、completed 和工具审批 event 不会覆盖 aborted 状态。
-- 工具审批请求会得到默认 denied/unsupported，不会导致崩溃。
+- 工具审批请求会得到 allowed/denied 决策并回传 Runtime Host，不会导致崩溃。
 - 可以保存完整 session 记录到 `sessions/`。
 - 可以恢复完整消息历史、失败状态和临时审批决策。
 - 可以通过管理层创建、缓存、列出和删除 session。
@@ -160,7 +165,6 @@ xcodebuild test -scheme AgentMac -destination 'platform=macOS' -only-testing:Age
 
 ## 第一版不做
 
-- 不做完整审批 UI。
 - 不做 Runtime Host 进程级 resume/reattach。
 - 不做多会话并发调度策略。
 - 不做消息搜索。

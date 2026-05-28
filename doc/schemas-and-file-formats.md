@@ -131,7 +131,7 @@ ask
 deny
 ```
 
-第一阶段 `Approval` 未实现时，`ask` 按 `deny/unsupported` 处理。
+第一版 `Approval` 接入后，`allow` 自动批准、`deny` 自动拒绝、`ask` 通过 AppShell UI 等待用户确认。
 
 ### 校验规则
 
@@ -225,7 +225,7 @@ sessions/<session-id>.json
 | `updatedAt` | ISO-8601 string | 是 | 最近一次状态、消息或诊断更新时间。 |
 | `messageCount` | integer | 是 | `messages` 数量摘要；旧 record 没有 `messages` 时保留旧值。 |
 | `messages` | object[] | 否 | 完整消息历史；旧 record 缺失时按空数组读取。 |
-| `toolApprovals` | object[] | 否 | 临时工具审批决策；完整 Approval 模块实现前只保存 denied/unsupported。 |
+| `toolApprovals` | object[] | 否 | 工具审批决策记录；当前支持 allowed、denied，并兼容旧的 unsupported。 |
 
 `messages` 字段：
 

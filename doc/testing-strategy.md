@@ -78,8 +78,8 @@
 - 启动 session。
 - 发送消息。
 - 显示流式 assistant 输出。
-- 默认拒绝工具审批请求。
-- 后续审批 UI 批准/拒绝。
+- 工具审批请求展示 UI。
+- 审批 UI 批准/拒绝并回传 Runtime Host。
 
 ## 推荐测试命令
 
@@ -205,7 +205,7 @@ Pi 会话。
 - assistant delta 合并。
 - 重复 start、未完成 send 再 send、failed/aborted 后 send 的边界错误。
 - abort 后迟到 event 不覆盖 aborted 状态。
-- tool approval request 默认拒绝。
+- tool approval request 记录决策并通过 RuntimeBridge 回传。
 
 ### AppShell
 
@@ -271,8 +271,8 @@ macOS build 和手工 UI 验收覆盖；窗口内部的业务状态仍由 `Agent
 `~/Library/Application Support/AgentMac/Pi/auth.json`；其中明文 key 只允许作为第一阶段本地
 验证手段，不应提交到仓库。
 
-Agent 管理、资源管理和完整 Approval UI 后续实现时，再分别补 reducer 测试和必要的 UI 自动化。
-当前 Agent 管理 UI 已有 reducer 测试；资源选择和资源管理 UI 实现后继续补对应测试。
+Agent 管理、资源管理和 Approval UI 分别补 reducer 测试；必要的 UI 自动化按风险后续增加。
+当前 Agent 管理 UI、资源管理 UI 和 Approval 确认路径已有 reducer 测试。
 
 ### Approval
 

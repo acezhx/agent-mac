@@ -19,7 +19,7 @@ const PI_MODULE_RELATIVE_PATH = path.join(
 /**
  * RuntimeHost 的 JSONL 协议入口。
  *
- * 该类只负责 stdin/stdout 边界，不读取 Agent 配置，不接 UI，也不处理审批流程。
+ * 该类只负责 stdin/stdout 边界，不读取 Agent 配置，不接 UI，也不执行工具。
  */
 class RuntimeHost {
   /**
@@ -34,9 +34,11 @@ class RuntimeHost {
     this.runtimeMode = options.runtimeMode ?? (process.env.AGENTMAC_RUNTIMEHOST_USE_MOCK_PI === "1" ? "mock" : "pi");
     this.nextEventNumber = 1;
     this.nextSessionNumber = 1;
+    this.nextToolCallNumber = 1;
     this.sessions = new Map();
     this.piRuntime = null;
     this.commandQueue = Promise.resolve();
+    this.mockToolApprovalEnabled = process.env.AGENTMAC_RUNTIMEHOST_MOCK_TOOL_APPROVAL === "1";
   }
 
   /**
@@ -84,6 +86,15 @@ class RuntimeHost {
       return;
     }
 
+    if (command.name === "approveToolCall") {
+      void this.handleCommand(command).catch((error) => {
+        this.writeError(command.id, "internal_error", "RuntimeHost command failed.", true, {
+          reason: formatErrorMessage(error),
+        });
+      });
+      return;
+    }
+
     this.commandQueue = this.commandQueue.then(async () => {
       try {
         await this.handleCommand(command);
@@ -118,6 +129,9 @@ class RuntimeHost {
         break;
       case "abortSession":
         await this.abortSession(command);
+        break;
+      case "approveToolCall":
+        await this.approveToolCall(command);
         break;
       default:
         this.writeError(
@@ -193,7 +207,7 @@ class RuntimeHost {
 
     const session = this.sessions.get(sessionId);
     if (session.kind === "mock") {
-      this.sendMockMessage(command.id, sessionId, message.content);
+      await this.sendMockMessage(command.id, session, message.content);
       return;
     }
 
@@ -205,7 +219,7 @@ class RuntimeHost {
     session.activeReplyTo = command.id;
     session.completed = false;
     session.seenTextDelta = false;
-    session.toolApprovalRejected = false;
+    session.toolApprovalRequested = false;
 
     try {
       await session.piSession.sendUserMessage(message.content);
@@ -254,12 +268,14 @@ class RuntimeHost {
         this.log(`Pi session abort failed: ${formatErrorMessage(error)}`);
       } finally {
         try {
+          this.rejectPendingToolApprovals(session, "Runtime session was aborted.");
           this.disposePiSession(session);
         } finally {
           this.sessions.delete(sessionId);
         }
       }
     } else {
+      this.rejectPendingToolApprovals(session, "Runtime session was aborted.");
       this.sessions.delete(sessionId);
     }
 
@@ -276,13 +292,14 @@ class RuntimeHost {
    *
    * @param {string} sessionId RuntimeHost session id。
    * @param {string|null} workspacePath 工作目录。
-   * @returns {{ kind: "mock", id: string, workspacePath: string|null }} mock session。
+   * @returns {object} mock session。
    */
   createMockSession(sessionId, workspacePath) {
     return {
       kind: "mock",
       id: sessionId,
       workspacePath,
+      pendingToolApprovals: new Map(),
     };
   }
 
@@ -348,7 +365,8 @@ class RuntimeHost {
       activeReplyTo: null,
       completed: false,
       seenTextDelta: false,
-      toolApprovalRejected: false,
+      toolApprovalRequested: false,
+      pendingToolApprovals: new Map(),
     };
     session.unsubscribe = result.session.subscribe((event) => {
       this.handlePiEvent(session, event);
@@ -424,7 +442,7 @@ class RuntimeHost {
     }
 
     if (isPiToolEvent(event)) {
-      this.rejectUnsupportedTool(session, event);
+      void this.requestToolApproval(session, event);
       return;
     }
 
@@ -457,7 +475,7 @@ class RuntimeHost {
         payload: { text: assistantEvent.delta },
       });
     } else if (String(assistantEvent.type).startsWith("toolcall_")) {
-      this.rejectUnsupportedTool(session, event);
+      void this.requestToolApproval(session, event);
     }
   }
 
@@ -497,26 +515,48 @@ class RuntimeHost {
   }
 
   /**
-   * 拒绝 Pi 工具调用，保持 RuntimeHost 不接 Approval 的边界。
+   * 请求 Swift 侧审批工具调用。
    *
    * @param {object} session RuntimeHost 内部 session 状态。
    * @param {object} event Pi tool event。
+   * @returns {Promise<object|null>} 审批决策；无法请求时返回 null。
    */
-  rejectUnsupportedTool(session, event) {
-    if (session.toolApprovalRejected || !session.activeReplyTo) {
-      return;
+  async requestToolApproval(session, event) {
+    if (session.toolApprovalRequested || !session.activeReplyTo) {
+      return null;
     }
 
-    session.toolApprovalRejected = true;
-    this.writeError(
-      session.activeReplyTo,
-      "tool_approval_unsupported",
-      "RuntimeHost does not support tool approval yet.",
-      true,
-      {
+    session.toolApprovalRequested = true;
+    const request = this.toolApprovalRequestFromEvent(event);
+    const decision = await this.waitForToolApproval(session, session.activeReplyTo, request);
+    if (!session.completed && session.activeReplyTo) {
+      this.writeEvent({
+        replyTo: session.activeReplyTo,
+        sessionId: session.id,
+        name: "messageCompleted",
+        payload: {},
+      });
+      session.completed = true;
+    }
+    return decision;
+  }
+
+  /**
+   * 从 Pi tool event 生成 RuntimeHost 稳定审批请求。
+   *
+   * @param {object} event Pi tool event。
+   * @returns {object} toolApprovalRequested payload。
+   */
+  toolApprovalRequestFromEvent(event) {
+    return {
+      toolCallId: this.nextToolCallId(),
+      toolName: typeof event.toolName === "string" ? event.toolName : "tool",
+      risk: inferToolApprovalRisk(event),
+      summary: "Approve tool execution",
+      details: {
         piEventType: typeof event.type === "string" ? event.type : "unknown",
       },
-    );
+    };
   }
 
   /**
@@ -537,17 +577,111 @@ class RuntimeHost {
   }
 
   /**
+   * 处理 Swift 返回的工具审批决策。
+   *
+   * @param {{ id: string, payload?: object }} command approveToolCall command。
+   */
+  async approveToolCall(command) {
+    const payload = command.payload ?? {};
+    const sessionId = typeof payload.sessionId === "string" ? payload.sessionId : null;
+    const toolCallId = typeof payload.toolCallId === "string" ? payload.toolCallId : null;
+    const decision = typeof payload.decision === "string" ? payload.decision : null;
+    const reason = typeof payload.reason === "string" ? payload.reason : "";
+
+    if (!sessionId || !this.sessions.has(sessionId)) {
+      this.writeError(command.id, "missing_session", "Session not found.", true);
+      return;
+    }
+    if (!toolCallId || !["approved", "denied"].includes(decision)) {
+      this.writeError(
+        command.id,
+        "invalid_command",
+        "approveToolCall requires toolCallId and an approved or denied decision.",
+        true,
+      );
+      return;
+    }
+
+    const session = this.sessions.get(sessionId);
+    const pending = session.pendingToolApprovals?.get(toolCallId);
+    if (!pending) {
+      this.writeError(command.id, "missing_tool_approval", "Tool approval request not found.", true);
+      return;
+    }
+
+    session.pendingToolApprovals.delete(toolCallId);
+    this.writeEvent({
+      replyTo: command.id,
+      sessionId,
+      name: "toolApprovalResolved",
+      payload: {
+        toolCallId,
+        decision,
+      },
+    });
+    pending.resolve({ decision, reason });
+  }
+
+  /**
+   * 发出工具审批请求并等待 approveToolCall command。
+   *
+   * @param {object} session RuntimeHost 内部 session 状态。
+   * @param {string} replyTo 当前 sendMessage command id。
+   * @param {object} request toolApprovalRequested payload。
+   * @returns {Promise<object>} 审批决策。
+   */
+  waitForToolApproval(session, replyTo, request) {
+    const pending = new Promise((resolve) => {
+      session.pendingToolApprovals.set(request.toolCallId, { resolve });
+    });
+
+    this.writeEvent({
+      replyTo,
+      sessionId: session.id,
+      name: "toolApprovalRequested",
+      payload: request,
+    });
+
+    return pending;
+  }
+
+  /**
+   * 取消 session 中仍在等待的审批请求。
+   *
+   * @param {object} session RuntimeHost 内部 session 状态。
+   * @param {string} reason 取消原因。
+   */
+  rejectPendingToolApprovals(session, reason) {
+    for (const [toolCallId, pending] of session.pendingToolApprovals ?? []) {
+      pending.resolve({ decision: "denied", reason });
+      session.pendingToolApprovals.delete(toolCallId);
+    }
+  }
+
+  /**
    * 为 mock session 输出多段 assistant delta 和完成事件。
    *
    * @param {string} replyTo command id。
-   * @param {string} sessionId RuntimeHost session id。
+   * @param {object} session RuntimeHost 内部 mock session。
    * @param {string} content 用户消息。
    */
-  sendMockMessage(replyTo, sessionId, content) {
+  async sendMockMessage(replyTo, session, content) {
+    if (this.mockToolApprovalEnabled) {
+      await this.waitForToolApproval(session, replyTo, {
+        toolCallId: this.nextToolCallId(),
+        toolName: "bash",
+        risk: "shell",
+        summary: "Run shell command",
+        details: {
+          command: content,
+        },
+      });
+    }
+
     for (const text of this.mockAssistantDeltas(content)) {
       this.writeEvent({
         replyTo,
-        sessionId,
+        sessionId: session.id,
         name: "assistantDelta",
         payload: { text },
       });
@@ -555,7 +689,7 @@ class RuntimeHost {
 
     this.writeEvent({
       replyTo,
-      sessionId,
+      sessionId: session.id,
       name: "messageCompleted",
       payload: {},
     });
@@ -656,6 +790,17 @@ class RuntimeHost {
   nextSessionId() {
     const id = `ses_${String(this.nextSessionNumber).padStart(3, "0")}`;
     this.nextSessionNumber += 1;
+    return id;
+  }
+
+  /**
+   * 生成稳定递增的 tool call id。
+   *
+   * @returns {string} tool call id。
+   */
+  nextToolCallId() {
+    const id = `tool_${String(this.nextToolCallNumber).padStart(3, "0")}`;
+    this.nextToolCallNumber += 1;
     return id;
   }
 
@@ -764,6 +909,26 @@ function isPiToolEvent(event) {
     return String(event.assistantMessageEvent.type).startsWith("toolcall_");
   }
   return hasToolCall(event.message);
+}
+
+/**
+ * 从 Pi event 粗略推断审批风险类型。
+ *
+ * @param {object} event Pi event。
+ * @returns {"shell"|"edit"|"network"|"unknown"} RuntimeHost 稳定风险类型。
+ */
+function inferToolApprovalRisk(event) {
+  const text = JSON.stringify(event).toLowerCase();
+  if (/bash|shell|terminal|command/.test(text)) {
+    return "shell";
+  }
+  if (/edit|write|file|patch/.test(text)) {
+    return "edit";
+  }
+  if (/network|http|url|fetch|request/.test(text)) {
+    return "network";
+  }
+  return "unknown";
 }
 
 /**

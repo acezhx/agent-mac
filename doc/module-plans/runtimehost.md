@@ -62,9 +62,9 @@ RuntimeHost
 
 ### 审批扩展点
 
-- 如果 Pi/runtime 返回工具审批请求，第一阶段返回 denied/unsupported。
-- 保留 approval request event 格式。
-- 不阻塞基础 chat session。
+- 如果 Pi/runtime 返回工具审批请求，输出 `toolApprovalRequested`。
+- 支持 `approveToolCall` command，接收 approved/denied 决策。
+- RuntimeHost 只接收决策并继续 runtime 流程，不把工具执行下沉到 Swift。
 
 ### 错误与日志
 
@@ -86,7 +86,7 @@ RuntimeHost
 - [x] 接入固定 Pi coding agent。
 - [x] 支持 `fixedCodingAgent` session mode。
 - [x] 将 Pi events 转为稳定 event。
-- [x] 实现默认审批拒绝。
+- [x] 实现工具审批请求和决策回传协议。
 - [x] 实现协议错误处理。
 - [x] 编写 RuntimeHost 命令行验证脚本或测试。
 
@@ -100,12 +100,11 @@ RuntimeHost
 - 接入 Pi 后，固定 Pi coding agent 能成功启动。
 - 固定 Pi coding agent 能对用户消息产生流式回复。
 - 固定 Pi coding agent 模式不读取用户 `agent.yaml`。
-- 遇到需要审批的工具请求时返回 denied/unsupported。
+- 遇到需要审批的工具请求时发出 `toolApprovalRequested`，并能接收 approved/denied 决策。
 
 ## 第一版不做
 
 - 不加载任意自定义 tool。
-- 不做完整审批流程。
 - 不做 Agent 编辑和资源维护。
 - 不做长期 session 存储。
 - 不做 runtime 自动更新。

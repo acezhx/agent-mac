@@ -309,6 +309,7 @@ nonisolated final class RuntimeBridge: @unchecked Sendable {
     private var stderrPipe: Pipe?
     private var stdoutBuffer = Data()
     private var eventResults: [Result<RuntimeEvent, RuntimeBridgeError>] = []
+    private var bufferedEventsByReplyTo: [String: [RuntimeEvent]] = [:]
     private var stderrText = ""
     private var nextCommandNumber = 1
     private var runGeneration = UUID()
@@ -378,6 +379,7 @@ nonisolated final class RuntimeBridge: @unchecked Sendable {
             self.stderrPipe = stderrPipe
             self.stdoutBuffer = Data()
             self.eventResults = []
+            self.bufferedEventsByReplyTo = [:]
             self.stderrText = ""
             self.eventSemaphore = DispatchSemaphore(value: 0)
             self.runGeneration = runGeneration
@@ -394,6 +396,7 @@ nonisolated final class RuntimeBridge: @unchecked Sendable {
                 self.stderrPipe = nil
                 self.stdoutBuffer = Data()
                 self.eventResults = []
+                self.bufferedEventsByReplyTo = [:]
                 self.eventSemaphore = DispatchSemaphore(value: 0)
                 self.runGeneration = UUID()
             }
@@ -425,6 +428,7 @@ nonisolated final class RuntimeBridge: @unchecked Sendable {
             self.stderrPipe = nil
             self.stdoutBuffer = Data()
             self.eventResults = []
+            self.bufferedEventsByReplyTo = [:]
             self.eventSemaphore = DispatchSemaphore(value: 0)
             self.runGeneration = UUID()
         }
@@ -532,6 +536,40 @@ nonisolated final class RuntimeBridge: @unchecked Sendable {
         return event
     }
 
+    /// 将工具审批决策返回 Runtime Host。
+    ///
+    /// - Parameters:
+    ///   - sessionId: Runtime Host session id。
+    ///   - toolCallID: Runtime Host 工具调用 id。
+    ///   - decision: 用户或策略给出的审批决策。
+    ///   - timeout: 等待 Runtime Host 确认 event 的秒数。
+    /// - Returns: Runtime Host 返回的 `toolApprovalResolved` event。
+    /// - Throws: 进程未启动、写入失败、超时或 Runtime Host 返回 error event 时抛出错误。
+    @discardableResult
+    func approveToolCall(
+        sessionId: String,
+        toolCallID: String,
+        decision: ToolApprovalDecision,
+        timeout: TimeInterval = 5
+    ) throws -> RuntimeEvent {
+        let command = RuntimeCommand(
+            id: nextCommandID(),
+            name: "approveToolCall",
+            payload: .object([
+                "sessionId": .string(sessionId),
+                "toolCallId": .string(toolCallID),
+                "decision": .string(decision.runtimeDecision),
+                "reason": .string(decision.reason),
+            ])
+        )
+        try send(command)
+        let event = try readMatchingEvent(replyTo: command.id, timeout: timeout)
+        guard event.name == "toolApprovalResolved" else {
+            throw RuntimeBridgeError.unexpectedEvent(name: event.name, replyTo: event.replyTo)
+        }
+        return event
+    }
+
     /// 写入任意 Runtime Host command。
     ///
     /// - Parameter command: 已构造的 command envelope。
@@ -622,6 +660,13 @@ nonisolated final class RuntimeBridge: @unchecked Sendable {
     /// - Throws: 超时、stdout 解析失败、进程退出或 Runtime Host 返回 error event 时抛出错误。
     private func readMatchingEvent(replyTo: String, deadline: Date) throws -> RuntimeEvent {
         while true {
+            if let event = dequeueBufferedEvent(replyTo: replyTo) {
+                if let runtimeError = runtimeError(from: event) {
+                    throw runtimeError
+                }
+                return event
+            }
+
             let remaining = deadline.timeIntervalSinceNow
             guard remaining > 0 else {
                 throw RuntimeBridgeError.eventReadTimeout(seconds: 0)
@@ -634,6 +679,41 @@ nonisolated final class RuntimeBridge: @unchecked Sendable {
             if event.replyTo == replyTo {
                 return event
             }
+
+            bufferEventIfAddressed(event)
+        }
+    }
+
+    /// 取出之前被其他 command 读取到的匹配 event。
+    ///
+    /// - Parameter replyTo: command id。
+    /// - Returns: 匹配 command id 的最早暂存 event。
+    private func dequeueBufferedEvent(replyTo: String) -> RuntimeEvent? {
+        stateQueue.sync {
+            guard var events = bufferedEventsByReplyTo[replyTo], !events.isEmpty else {
+                return nil
+            }
+
+            let event = events.removeFirst()
+            if events.isEmpty {
+                bufferedEventsByReplyTo[replyTo] = nil
+            } else {
+                bufferedEventsByReplyTo[replyTo] = events
+            }
+            return event
+        }
+    }
+
+    /// 将被嵌套 command 读到的其他 command event 暂存起来。
+    ///
+    /// - Parameter event: Runtime Host event。
+    private func bufferEventIfAddressed(_ event: RuntimeEvent) {
+        guard let replyTo = event.replyTo else {
+            return
+        }
+
+        stateQueue.sync {
+            bufferedEventsByReplyTo[replyTo, default: []].append(event)
         }
     }
 

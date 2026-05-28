@@ -211,6 +211,108 @@ test("abortSession removes mock session", async (t) => {
   assert.equal(event.payload.code, "missing_session");
 });
 
+test("approveToolCall resolves a pending mock tool approval", async (t) => {
+  const host = startRuntimeHost(t, {
+    env: {
+      AGENTMAC_RUNTIMEHOST_MOCK_TOOL_APPROVAL: "1",
+    },
+  });
+
+  host.writeCommand({
+    type: "command",
+    id: "cmd_approval_start",
+    name: "startSession",
+    payload: {
+      agent: { mode: "fixedCodingAgent" },
+    },
+  });
+  assert.equal((await host.readEvent()).name, "sessionStarted");
+
+  host.writeCommand({
+    type: "command",
+    id: "cmd_approval_send",
+    name: "sendMessage",
+    payload: {
+      sessionId: "ses_001",
+      message: {
+        role: "user",
+        content: "ls -la",
+      },
+    },
+  });
+
+  const request = await host.readEvent();
+  assert.equal(request.name, "toolApprovalRequested");
+  assert.equal(request.replyTo, "cmd_approval_send");
+  assert.equal(request.sessionId, "ses_001");
+  assert.equal(request.payload.toolCallId, "tool_001");
+  assert.equal(request.payload.toolName, "bash");
+  assert.equal(request.payload.risk, "shell");
+
+  host.writeCommand({
+    type: "command",
+    id: "cmd_approval_decide",
+    name: "approveToolCall",
+    payload: {
+      sessionId: "ses_001",
+      toolCallId: "tool_001",
+      decision: "approved",
+      reason: "Approved in test.",
+    },
+  });
+
+  assert.deepEqual(await host.readEvent(), {
+    type: "event",
+    id: "evt_003",
+    replyTo: "cmd_approval_decide",
+    sessionId: "ses_001",
+    name: "toolApprovalResolved",
+    payload: {
+      toolCallId: "tool_001",
+      decision: "approved",
+    },
+  });
+
+  let completed = false;
+  while (!completed) {
+    const event = await host.readEvent();
+    assert.equal(event.replyTo, "cmd_approval_send");
+    completed = event.name === "messageCompleted";
+  }
+});
+
+test("approveToolCall rejects missing pending approval", async (t) => {
+  const host = startRuntimeHost(t);
+
+  host.writeCommand({
+    type: "command",
+    id: "cmd_approval_missing_start",
+    name: "startSession",
+    payload: {
+      agent: { mode: "fixedCodingAgent" },
+    },
+  });
+  assert.equal((await host.readEvent()).name, "sessionStarted");
+
+  host.writeCommand({
+    type: "command",
+    id: "cmd_approval_missing",
+    name: "approveToolCall",
+    payload: {
+      sessionId: "ses_001",
+      toolCallId: "tool_missing",
+      decision: "denied",
+      reason: "No request.",
+    },
+  });
+
+  const event = await host.readEvent();
+  assert.equal(event.type, "event");
+  assert.equal(event.replyTo, "cmd_approval_missing");
+  assert.equal(event.name, "error");
+  assert.equal(event.payload.code, "missing_tool_approval");
+});
+
 test("abortSession removes pi session even when Pi abort throws", async () => {
   const events = [];
   let disposed = false;

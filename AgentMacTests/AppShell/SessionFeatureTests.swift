@@ -26,6 +26,7 @@ struct SessionFeatureTests {
                 sendMessage: { _ in },
                 abortSession: {},
                 resetSession: {},
+                resolveToolApproval: { _, _ in },
                 snapshots: { stream }
             )
         }
@@ -105,6 +106,7 @@ struct SessionFeatureTests {
                 sendMessage: { _ in },
                 abortSession: {},
                 resetSession: {},
+                resolveToolApproval: { _, _ in },
                 snapshots: { AsyncStream { $0.finish() } }
             )
         }
@@ -165,6 +167,7 @@ struct SessionFeatureTests {
                 },
                 abortSession: {},
                 resetSession: {},
+                resolveToolApproval: { _, _ in },
                 snapshots: { AsyncStream { $0.finish() } }
             )
         }
@@ -233,6 +236,7 @@ struct SessionFeatureTests {
                 sendMessage: { _ in },
                 abortSession: {},
                 resetSession: {},
+                resolveToolApproval: { _, _ in },
                 snapshots: { AsyncStream { $0.finish() } }
             )
         }
@@ -241,6 +245,79 @@ struct SessionFeatureTests {
             $0.snapshot = snapshot
             $0.errorMessage = error.localizedDescription
         }
+    }
+
+    /// 验证用户批准工具审批会通过 AppSessionClient 回传。
+    @Test func allowToolApprovalSubmitsDecision() async {
+        let request = makePendingApprovalRequest()
+        let snapshot = makeSnapshot(
+            runtimeSessionID: "ses_001",
+            state: .running,
+            pendingToolApprovalRequest: request
+        )
+        let recorder = Recorder()
+        var state = SessionFeature.State(workspacePath: "/tmp/workspace")
+        state.snapshot = snapshot
+        let store = TestStore(initialState: state) {
+            SessionFeature()
+        } withDependencies: {
+            $0.appSessionClient = makeClient(
+                resolveToolApproval: { toolCallID, decision in
+                    recorder.approvalDecisions.append(.init(toolCallID: toolCallID, decision: decision))
+                }
+            )
+        }
+
+        await store.send(.allowToolApprovalButtonTapped("tool_001")) {
+            $0.isResolvingToolApproval = true
+            $0.errorMessage = nil
+        }
+        await store.receive(.resolveToolApprovalSucceeded("tool_001")) {
+            $0.isResolvingToolApproval = false
+            $0.submittedToolApprovalIDs = ["tool_001"]
+        }
+        await store.send(.denyToolApprovalButtonTapped("tool_001"))
+
+        #expect(recorder.approvalDecisions == [
+            .init(toolCallID: "tool_001", decision: .allowed(reason: "Approved by user.")),
+        ])
+        await store.finish()
+    }
+
+    /// 验证关闭审批 UI 会按 deny 回传。
+    @Test func dismissedToolApprovalSubmitsDeniedDecision() async {
+        let request = makePendingApprovalRequest()
+        let snapshot = makeSnapshot(
+            runtimeSessionID: "ses_001",
+            state: .running,
+            pendingToolApprovalRequest: request
+        )
+        let recorder = Recorder()
+        var state = SessionFeature.State(workspacePath: "/tmp/workspace")
+        state.snapshot = snapshot
+        let store = TestStore(initialState: state) {
+            SessionFeature()
+        } withDependencies: {
+            $0.appSessionClient = makeClient(
+                resolveToolApproval: { toolCallID, decision in
+                    recorder.approvalDecisions.append(.init(toolCallID: toolCallID, decision: decision))
+                }
+            )
+        }
+
+        await store.send(.toolApprovalSheetDismissed("tool_001")) {
+            $0.isResolvingToolApproval = true
+            $0.errorMessage = nil
+        }
+        await store.receive(.resolveToolApprovalSucceeded("tool_001")) {
+            $0.isResolvingToolApproval = false
+            $0.submittedToolApprovalIDs = ["tool_001"]
+        }
+
+        #expect(recorder.approvalDecisions == [
+            .init(toolCallID: "tool_001", decision: .denied(reason: "Approval UI was dismissed.")),
+        ])
+        await store.finish()
     }
 
     /// 验证 abort/reset action 会通过 dependency，并清理进行中标记。
@@ -260,6 +337,7 @@ struct SessionFeatureTests {
                 resetSession: {
                     recorder.didReset = true
                 },
+                resolveToolApproval: { _, _ in },
                 snapshots: { AsyncStream { $0.finish() } }
             )
         }
@@ -368,6 +446,9 @@ struct SessionFeatureTests {
         resetSession: @escaping @Sendable () async throws -> Void = {
             throw AppSessionClientError("Unexpected resetSession call.")
         },
+        resolveToolApproval: @escaping @Sendable (String, ToolApprovalDecision) async throws -> Void = { _, _ in
+            throw AppSessionClientError("Unexpected resolveToolApproval call.")
+        },
         snapshots: @escaping @Sendable () async throws -> AsyncStream<ChatSessionSnapshot> = {
             AsyncStream { continuation in
                 continuation.finish()
@@ -380,6 +461,7 @@ struct SessionFeatureTests {
             sendMessage: sendMessage,
             abortSession: abortSession,
             resetSession: resetSession,
+            resolveToolApproval: resolveToolApproval,
             snapshots: snapshots
         )
     }
@@ -387,14 +469,28 @@ struct SessionFeatureTests {
     private func makeSnapshot(
         runtimeSessionID: String? = nil,
         state: SessionState = .idle,
-        messages: [ChatMessage] = []
+        messages: [ChatMessage] = [],
+        pendingToolApprovalRequest: ToolApprovalRequest? = nil
     ) -> ChatSessionSnapshot {
         ChatSessionSnapshot(
             id: UUID(uuidString: "00000000-0000-0000-0000-000000000101")!,
             runtimeSessionID: runtimeSessionID,
             state: state,
             messages: messages,
+            pendingToolApprovalRequest: pendingToolApprovalRequest,
             updatedAt: Date(timeIntervalSince1970: 1)
+        )
+    }
+
+    private func makePendingApprovalRequest() -> ToolApprovalRequest {
+        ToolApprovalRequest(
+            toolCallID: "tool_001",
+            toolName: "bash",
+            risk: .shell,
+            summary: "Run shell command",
+            details: [
+                .init(key: "command", value: "ls -la"),
+            ]
         )
     }
 }
@@ -415,4 +511,16 @@ private final class Recorder: @unchecked Sendable {
 
     /// reset 是否被调用。
     var didReset = false
+
+    /// 审批决策提交记录。
+    var approvalDecisions: [ApprovalDecisionRecord] = []
+}
+
+/// 测试用审批提交记录。
+private struct ApprovalDecisionRecord: Equatable {
+    /// Runtime Host 工具调用 id。
+    let toolCallID: String
+
+    /// 提交的审批决策。
+    let decision: ToolApprovalDecision
 }

@@ -252,7 +252,8 @@ Event：
 
 ### approveToolCall
 
-第一阶段不完整实现。保留协议，用于后续 `Approval` 模块。
+返回工具审批决策。Runtime Host 收到 `toolApprovalRequested` 后会等待该 command，再继续当前
+`sendMessage` 流程。
 
 Command：
 
@@ -264,8 +265,29 @@ Command：
   "payload": {
     "sessionId": "ses_001",
     "toolCallId": "tool_001",
-    "decision": "denied",
-    "reason": "Tool approval is not supported yet."
+    "decision": "approved",
+    "reason": "Approved by user."
+  }
+}
+```
+
+`decision` 只允许：
+
+- `approved`
+- `denied`
+
+Event：
+
+```json
+{
+  "type": "event",
+  "id": "evt_007",
+  "replyTo": "cmd_005",
+  "sessionId": "ses_001",
+  "name": "toolApprovalResolved",
+  "payload": {
+    "toolCallId": "tool_001",
+    "decision": "approved"
   }
 }
 ```
@@ -304,9 +326,9 @@ Payload：
 
 ### toolApprovalRequested
 
-表示 runtime 请求工具审批。第一阶段 RuntimeHost 应默认禁用或拒绝需要审批的工具；如果仍
-上报该事件，Swift Session 只记录 denied/unsupported 决策，不把结果回传 RuntimeHost。完整
-Approval 阶段再补充等待用户审批和决策回传协议。
+表示 runtime 请求工具审批。Swift Session 应根据 Agent 权限策略自动 allow/deny，或通过
+AppShell 展示 UI 等待用户选择，然后用 `approveToolCall` 将 `approved` 或 `denied` 回传
+Runtime Host。
 
 Payload：
 
@@ -338,6 +360,19 @@ Payload：
 
 Payload 使用本文 Error Event 格式。
 
+### toolApprovalResolved
+
+表示 Runtime Host 已收到工具审批决策。
+
+Payload：
+
+```json
+{
+  "toolCallId": "tool_001",
+  "decision": "approved"
+}
+```
+
 ## 错误码
 
 第一版错误码：
@@ -350,17 +385,17 @@ missing_session
 runtime_start_failed
 runtime_failed
 model_failed
-tool_approval_unsupported
+missing_tool_approval
 internal_error
 ```
 
-## 第一阶段审批策略
+## 第一版审批策略
 
-在 `Approval` 完整实现前：
-
-- Runtime Host 当前不等待审批，也不发起真实工具执行。
-- 如果 Pi 返回工具调用或工具执行事件，Runtime Host 直接返回 `tool_approval_unsupported` error。
-- UI 不应卡死。
+- Runtime Host 发出 `toolApprovalRequested` 后等待 Swift 回传 `approveToolCall`。
+- Agent 权限为 `allow` 时，Swift Session 自动回传 `approved`。
+- Agent 权限为 `deny` 时，Swift Session 自动回传 `denied`。
+- Agent 权限为 `ask` 时，AppShell 展示确认 UI；用户关闭审批 UI 按 `denied` 处理。
+- Runtime Host 只接收审批结果；工具执行仍留在 runtime 内部，不下沉到 Swift。
 
 ## 兼容性规则
 

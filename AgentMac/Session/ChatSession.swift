@@ -37,6 +37,22 @@ nonisolated protocol SessionRuntimeBridging: AnyObject {
     /// - Returns: Runtime Host 返回的 event。
     @discardableResult
     func abortSession(sessionId: String, timeout: TimeInterval) throws -> RuntimeEvent
+
+    /// 将工具审批决策返回 Runtime Host。
+    ///
+    /// - Parameters:
+    ///   - sessionId: Runtime Host session id。
+    ///   - toolCallID: Runtime Host 工具调用 id。
+    ///   - decision: 用户或策略给出的审批决策。
+    ///   - timeout: 等待 Runtime Host 确认的秒数。
+    /// - Returns: Runtime Host 返回的确认 event。
+    @discardableResult
+    func approveToolCall(
+        sessionId: String,
+        toolCallID: String,
+        decision: ToolApprovalDecision,
+        timeout: TimeInterval
+    ) throws -> RuntimeEvent
 }
 
 nonisolated extension RuntimeBridge: SessionRuntimeBridging {}
@@ -67,6 +83,9 @@ nonisolated final class ChatSession: @unchecked Sendable {
     /// 当前工具审批决策列表。
     private(set) var toolApprovalDecisions: [ToolApprovalDecision]
 
+    /// 当前等待用户确认的工具审批请求。
+    private(set) var pendingToolApprovalRequest: ToolApprovalRequest?
+
     /// 当前是否已有一轮用户消息正在等待 Runtime Host 完成。
     private var isMessageInFlight: Bool
 
@@ -80,6 +99,7 @@ nonisolated final class ChatSession: @unchecked Sendable {
     private let sessionStore: SessionStore
     private let runtimeBridge: any SessionRuntimeBridging
     private let approvalHandler: any ToolApprovalHandling
+    private let approvalService: ApprovalService
     private let idProvider: () -> UUID
     private let dateProvider: () -> Date
     /// Session 内部诊断日志处理器。
@@ -117,6 +137,7 @@ nonisolated final class ChatSession: @unchecked Sendable {
         self.state = .idle
         self.messages = []
         self.toolApprovalDecisions = []
+        self.pendingToolApprovalRequest = nil
         self.isMessageInFlight = false
         self.createdAt = now
         self.updatedAt = now
@@ -124,6 +145,7 @@ nonisolated final class ChatSession: @unchecked Sendable {
         self.sessionStore = SessionStore(fileStore: fileStore)
         self.runtimeBridge = runtimeBridge
         self.approvalHandler = approvalHandler
+        self.approvalService = ApprovalService()
         self.idProvider = idProvider
         self.dateProvider = dateProvider
         self.logHandler = logHandler
@@ -162,12 +184,14 @@ nonisolated final class ChatSession: @unchecked Sendable {
         self.sessionStore = SessionStore(fileStore: fileStore)
         self.runtimeBridge = runtimeBridge
         self.approvalHandler = approvalHandler
+        self.approvalService = ApprovalService()
         self.idProvider = idProvider
         self.dateProvider = dateProvider
         self.logHandler = logHandler
         self.snapshotContinuations = [:]
         self.createdAt = record.createdAt
         self.toolApprovalDecisions = record.toolApprovals
+        self.pendingToolApprovalRequest = nil
         self.isMessageInFlight = false
         self.messages = record.messages.map { message in
             var restored = message
@@ -199,6 +223,7 @@ nonisolated final class ChatSession: @unchecked Sendable {
             runtimeSessionID: runtimeSessionID,
             state: state,
             messages: messages,
+            pendingToolApprovalRequest: pendingToolApprovalRequest,
             updatedAt: updatedAt
         )
     }
@@ -308,6 +333,7 @@ nonisolated final class ChatSession: @unchecked Sendable {
         let previousState = state
         let previousMessages = messages
         let previousToolApprovalDecisions = toolApprovalDecisions
+        let previousPendingToolApprovalRequest = pendingToolApprovalRequest
         let previousIsMessageInFlight = isMessageInFlight
         let previousUpdatedAt = updatedAt
 
@@ -315,6 +341,7 @@ nonisolated final class ChatSession: @unchecked Sendable {
         state = .idle
         messages = []
         toolApprovalDecisions = []
+        pendingToolApprovalRequest = nil
         isMessageInFlight = false
         touch()
 
@@ -325,6 +352,7 @@ nonisolated final class ChatSession: @unchecked Sendable {
             state = previousState
             messages = previousMessages
             toolApprovalDecisions = previousToolApprovalDecisions
+            pendingToolApprovalRequest = previousPendingToolApprovalRequest
             isMessageInFlight = previousIsMessageInFlight
             updatedAt = previousUpdatedAt
             throw error
@@ -367,7 +395,7 @@ nonisolated final class ChatSession: @unchecked Sendable {
         case "sessionAborted":
             try markAborted()
         case "toolApprovalRequested":
-            handleToolApprovalRequest(event)
+            try handleToolApprovalRequest(event)
             try persistRecord()
             emitSnapshot()
         default:
@@ -429,21 +457,103 @@ nonisolated final class ChatSession: @unchecked Sendable {
         return false
     }
 
-    /// 使用默认审批策略处理工具审批请求。
+    /// 处理工具审批请求并将决策回传 Runtime Host。
     ///
     /// - Parameter event: Runtime Host event。
-    private func handleToolApprovalRequest(_ event: RuntimeEvent) {
-        guard let request = ToolApprovalRequest(event: event) else {
+    /// - Throws: RuntimeBridge 或 session record 持久化失败时抛出 `SessionError`。
+    private func handleToolApprovalRequest(_ event: RuntimeEvent) throws {
+        guard let request = makeToolApprovalRequest(from: event) else {
             return
         }
 
-        let decision = approvalHandler.handle(request)
+        let decision: ToolApprovalDecision
+        switch approvalService.evaluate(request, permissions: agentConfig.permissions) {
+        case let .resolved(resolvedDecision):
+            decision = resolvedDecision
+        case .requiresUserDecision:
+            pendingToolApprovalRequest = request
+            touch()
+            try persistRecord()
+            emitSnapshot()
+            decision = approvalHandler.handle(request)
+            pendingToolApprovalRequest = nil
+        }
+
         toolApprovalDecisions.append(decision)
         messages.append(makeMessage(
             role: .diagnostic,
-            content: "工具审批暂不支持，已默认拒绝：\(request.toolName)。\(decision.reason)"
+            content: "工具审批已\(decision.displayTitle)：\(request.toolName)。\(decision.reason)"
         ))
         touch()
+
+        guard let runtimeSessionID = event.sessionId ?? runtimeSessionID else {
+            throw SessionError.runtimeSessionMissing
+        }
+
+        try runtimeBridge.approveToolCall(
+            sessionId: runtimeSessionID,
+            toolCallID: request.toolCallID,
+            decision: decision,
+            timeout: 5
+        )
+    }
+
+    /// 从 Runtime Host event 创建 Approval 模块的审批请求。
+    ///
+    /// - Parameter event: Runtime Host event。
+    /// - Returns: 可展示和评估的工具审批请求；event 不匹配时返回 nil。
+    private func makeToolApprovalRequest(from event: RuntimeEvent) -> ToolApprovalRequest? {
+        guard event.name == "toolApprovalRequested", let payload = event.payload else {
+            return nil
+        }
+
+        return ToolApprovalRequest(
+            toolCallID: payload["toolCallId"]?.stringValue ?? event.id,
+            toolName: payload["toolName"]?.stringValue ?? "unknown",
+            risk: ToolApprovalRisk(runtimeValue: payload["risk"]?.stringValue),
+            summary: payload["summary"]?.stringValue ?? "Tool approval requested.",
+            details: approvalDetailFields(from: payload["details"])
+        )
+    }
+
+    /// 将 Runtime Host JSON details 转成稳定展示字段。
+    ///
+    /// - Parameter value: Runtime Host 上报的 details 值。
+    /// - Returns: 排序后的展示字段。
+    private func approvalDetailFields(from value: RuntimeJSONValue?) -> [ToolApprovalRequest.DetailField] {
+        guard case let .object(details) = value else {
+            return []
+        }
+
+        return details.keys.sorted().map { key in
+            ToolApprovalRequest.DetailField(
+                key: key,
+                value: runtimeJSONDescription(details[key] ?? .null)
+            )
+        }
+    }
+
+    /// 生成 Runtime JSON 值的简短展示文本。
+    ///
+    /// - Parameter value: Runtime JSON 值。
+    /// - Returns: 可展示文本。
+    private func runtimeJSONDescription(_ value: RuntimeJSONValue) -> String {
+        switch value {
+        case .null:
+            return "null"
+        case let .bool(value):
+            return value ? "true" : "false"
+        case let .number(value):
+            return String(value)
+        case let .string(value):
+            return value
+        case let .array(values):
+            return values.map(runtimeJSONDescription).joined(separator: ", ")
+        case let .object(values):
+            return values.keys.sorted()
+                .map { key in "\(key): \(runtimeJSONDescription(values[key] ?? .null))" }
+                .joined(separator: ", ")
+        }
     }
 
     /// 追加或合并 assistant 流式文本。
@@ -476,6 +586,7 @@ nonisolated final class ChatSession: @unchecked Sendable {
         finishStreamingAssistantMessage()
         runtimeSessionID = nil
         state = .aborted
+        pendingToolApprovalRequest = nil
         isMessageInFlight = false
         touch()
         try persistRecord()
@@ -488,6 +599,7 @@ nonisolated final class ChatSession: @unchecked Sendable {
     private func fail(with error: SessionError) {
         finishStreamingAssistantMessage()
         isMessageInFlight = false
+        pendingToolApprovalRequest = nil
         state = .failed(error)
         messages.append(makeMessage(role: .diagnostic, content: error.localizedDescription))
         touch()
