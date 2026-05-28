@@ -10,7 +10,7 @@ struct FileStoreTests {
     /// 验证初始化会创建完整目录布局，并且重复初始化不会覆盖已有设置文件。
     ///
     /// 该测试覆盖 `agents/`、`library/`、`library/knowledge/`、`library/skills/`、
-    /// `library/tools/`、`sessions/` 和默认 `settings.yaml` 的创建行为。
+    /// `library/tools/`、`sessions/`、`logs/` 和默认 `settings.yaml` 的创建行为。
     @Test func initializeCreatesLayoutAndPreservesExistingSettings() throws {
         let (store, root) = makeStore()
         defer { removeTemporaryRoot(root) }
@@ -23,6 +23,7 @@ struct FileStoreTests {
         #expect(try store.directoryExists(at: "library/skills"))
         #expect(try store.directoryExists(at: "library/tools"))
         #expect(try store.directoryExists(at: "sessions"))
+        #expect(try store.directoryExists(at: "logs"))
         #expect(try store.readTextFile(at: "settings.yaml") == FileStore.defaultSettingsYAML)
 
         try store.writeTextFile("appDataVersion: 2\n", to: "settings.yaml")

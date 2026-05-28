@@ -44,12 +44,81 @@ nonisolated struct AppSessionClientError: Error, Equatable, Sendable {
     ///
     /// - Parameter error: 底层服务错误。
     init(_ error: Error) {
-        if let localizedError = error as? LocalizedError,
+        if let error = error as? AppSessionClientError {
+            self.message = error.message
+        } else if let runtimeBridgeError = error as? RuntimeBridgeError {
+            self.message = Self.message(for: runtimeBridgeError)
+        } else if let sessionError = error as? SessionError {
+            self.message = Self.message(for: sessionError)
+        } else if let localizedError = error as? LocalizedError,
            let description = localizedError.errorDescription {
             self.message = description
         } else {
             self.message = error.localizedDescription
         }
+    }
+
+    private static func message(for error: RuntimeBridgeError) -> String {
+        switch error {
+        case .bundleResourceDirectoryUnavailable:
+            return "AgentMac could not locate bundled app resources. Rebuild the app and verify the Runtime folder is copied into the app bundle."
+        case let .nodeExecutableUnavailable(path):
+            return "Node runtime is missing or is not executable at \(path). Rebuild AgentMac with bundled Runtime resources, or select development runtime with AGENTMAC_NODE_PATH pointing to a valid Node executable."
+        case let .runtimeHostScriptUnavailable(path):
+            return "Runtime Host is missing at \(path). Rebuild AgentMac and verify Runtime/host/runtime-host.js is copied into the app bundle."
+        case let .piRuntimeUnavailable(path):
+            return "Pi runtime is missing at \(path). Run scripts/update-vendored-runtime.mjs, then rebuild AgentMac so Runtime/pi is copied into the app bundle."
+        case .processAlreadyRunning:
+            return "Runtime Host is already running."
+        case .processNotRunning:
+            return "Runtime Host is not running. Start the session again."
+        case let .processExited(status, stderr):
+            let stderr = trimmed(stderr)
+            let details = stderr.isEmpty ? "" : " Last stderr: \(truncated(stderr))"
+            return "Runtime Host exited before it was ready (status \(status)).\(details) \(runtimeLogHint)"
+        case let .eventReadTimeout(seconds):
+            return "Runtime Host did not respond within \(formatted(seconds)) seconds. \(runtimeLogHint)"
+        case .commandEncodeFailed, .commandWriteFailed, .eventDecodeFailed, .runtimeError, .unexpectedEvent:
+            return "Runtime Host communication failed. \(error.localizedDescription) \(runtimeLogHint)"
+        }
+    }
+
+    private static func message(for error: SessionError) -> String {
+        switch error {
+        case let .runtimeFailed(code, message, _):
+            if message.localizedCaseInsensitiveContains("Pi module entry not found") {
+                return "Pi runtime could not be loaded. Rebuild AgentMac with bundled Runtime/pi resources. Details: \(message)"
+            }
+            if code == "model_failed" {
+                return "Pi model or authentication configuration failed. Check ~/Library/Application Support/AgentMac/Pi/settings.json and auth.json. Details: \(message)"
+            }
+            return "Runtime session failed with \(code). \(message) \(runtimeLogHint)"
+        case let .bridgeFailed(message):
+            return "Runtime bridge failed. \(message)"
+        default:
+            return error.localizedDescription
+        }
+    }
+
+    private static let runtimeLogHint = "Check ~/Library/Application Support/AgentMac/logs/runtime-host.log for details."
+
+    private static func trimmed(_ text: String) -> String {
+        text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func truncated(_ text: String, limit: Int = 600) -> String {
+        guard text.count > limit else {
+            return text
+        }
+        return "\(text.prefix(limit))..."
+    }
+
+    private static func formatted(_ value: TimeInterval) -> String {
+        let rounded = (value * 10).rounded() / 10
+        if rounded.rounded() == rounded {
+            return String(Int(rounded))
+        }
+        return String(rounded)
     }
 }
 
@@ -249,34 +318,48 @@ private actor LiveAppSessionController {
     private func runtimeBridgeConfiguration(fileStore: FileStore) throws -> RuntimeBridgeConfiguration {
         let environment = ProcessInfo.processInfo.environment
         let appSupportURL = fileStore.layout.rootDirectory
+        let logDirectoryURL = fileStore.layout.logsDirectory
+        let mode = normalizedRuntimeMode(from: environment["AGENTMAC_RUNTIME_MODE"])
         let runtimeEnvironment = [
             "AGENTMAC_APP_SUPPORT_DIR": appSupportURL.path,
+            "AGENTMAC_LOG_DIR": logDirectoryURL.path,
             "AGENTMAC_PI_AGENT_DIR": appSupportURL.appendingPathComponent("Pi", isDirectory: true).path,
+            "AGENTMAC_RUNTIME_MODE": mode,
         ]
 
-        let mode = environment["AGENTMAC_RUNTIME_MODE"] ?? "bundled"
         switch mode {
         case "bundled":
             return try RuntimeBridgeConfiguration.bundled(
                 workingDirectoryURL: appSupportURL,
-                environment: runtimeEnvironment
+                environment: runtimeEnvironment,
+                stderrLogFileURL: logDirectoryURL.appendingPathComponent("runtime-host.log", isDirectory: false)
             )
         case "development":
-            guard let nodePath = environment["AGENTMAC_NODE_PATH"], !nodePath.isEmpty else {
-                throw AppSessionClientError("AGENTMAC_NODE_PATH is required when AGENTMAC_RUNTIME_MODE=development.")
+            guard let nodePath = environment["AGENTMAC_NODE_PATH"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !nodePath.isEmpty
+            else {
+                throw AppSessionClientError("Development runtime is selected but AGENTMAC_NODE_PATH is not set. Remove AGENTMAC_RUNTIME_MODE=development to use bundled runtime, or set AGENTMAC_NODE_PATH to a valid Node executable.")
             }
-            guard let hostPath = environment["AGENTMAC_RUNTIME_HOST_PATH"], !hostPath.isEmpty else {
-                throw AppSessionClientError("AGENTMAC_RUNTIME_HOST_PATH is required when AGENTMAC_RUNTIME_MODE=development.")
+            guard let hostPath = environment["AGENTMAC_RUNTIME_HOST_PATH"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !hostPath.isEmpty
+            else {
+                throw AppSessionClientError("Development runtime is selected but AGENTMAC_RUNTIME_HOST_PATH is not set. Remove AGENTMAC_RUNTIME_MODE=development to use bundled runtime, or set AGENTMAC_RUNTIME_HOST_PATH to runtime-host.js.")
             }
             return RuntimeBridgeConfiguration(
                 nodeExecutableURL: URL(fileURLWithPath: nodePath, isDirectory: false),
                 runtimeHostScriptURL: URL(fileURLWithPath: hostPath, isDirectory: false),
                 workingDirectoryURL: appSupportURL,
-                environment: runtimeEnvironment
+                environment: runtimeEnvironment,
+                stderrLogFileURL: logDirectoryURL.appendingPathComponent("runtime-host.log", isDirectory: false)
             )
         default:
-            throw AppSessionClientError("Unsupported AGENTMAC_RUNTIME_MODE: \(mode).")
+            throw AppSessionClientError("Unsupported AGENTMAC_RUNTIME_MODE '\(mode)'. Use 'bundled' for clean app launch or 'development' with explicit Node and Runtime Host paths.")
         }
+    }
+
+    private func normalizedRuntimeMode(from rawValue: String?) -> String {
+        let mode = rawValue?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        return mode.isEmpty ? "bundled" : mode
     }
 }
 

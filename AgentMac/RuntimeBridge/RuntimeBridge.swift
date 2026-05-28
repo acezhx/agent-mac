@@ -152,29 +152,41 @@ nonisolated struct RuntimeBridgeConfiguration: Equatable, Sendable {
     /// Runtime Host JavaScript 入口路径。
     let runtimeHostScriptURL: URL
 
+    /// Pi runtime 入口路径；development 模式可为空，由 Runtime Host 自行解析。
+    let piModuleEntryURL: URL?
+
     /// Runtime Host 进程工作目录。
     let workingDirectoryURL: URL
 
     /// 传给 Runtime Host 的额外环境变量。
     let environment: [String: String]
 
+    /// Runtime Host stderr 追加写入的诊断日志文件。
+    let stderrLogFileURL: URL?
+
     /// 创建 RuntimeBridge 配置。
     ///
     /// - Parameters:
     ///   - nodeExecutableURL: Node 可执行文件路径。
     ///   - runtimeHostScriptURL: Runtime Host JavaScript 入口路径。
+    ///   - piModuleEntryURL: Pi runtime 入口路径；nil 表示不在 Swift 侧预校验。
     ///   - workingDirectoryURL: Runtime Host 工作目录。
     ///   - environment: 额外环境变量；会覆盖当前进程同名环境变量。
+    ///   - stderrLogFileURL: Runtime Host stderr 追加写入的日志文件；nil 表示只保留内存日志。
     init(
         nodeExecutableURL: URL,
         runtimeHostScriptURL: URL,
+        piModuleEntryURL: URL? = nil,
         workingDirectoryURL: URL,
-        environment: [String: String] = [:]
+        environment: [String: String] = [:],
+        stderrLogFileURL: URL? = nil
     ) {
         self.nodeExecutableURL = nodeExecutableURL.standardizedFileURL
         self.runtimeHostScriptURL = runtimeHostScriptURL.standardizedFileURL
+        self.piModuleEntryURL = piModuleEntryURL?.standardizedFileURL
         self.workingDirectoryURL = workingDirectoryURL.standardizedFileURL
         self.environment = environment
+        self.stderrLogFileURL = stderrLogFileURL?.standardizedFileURL
     }
 
     /// 生成 app bundle 内置 runtime 配置。
@@ -183,12 +195,14 @@ nonisolated struct RuntimeBridgeConfiguration: Equatable, Sendable {
     ///   - bundle: 包含 `Contents/Resources/Runtime` 的 app bundle。
     ///   - workingDirectoryURL: Runtime Host 工作目录，通常是 Application Support 根目录。
     ///   - environment: 额外环境变量。
+    ///   - stderrLogFileURL: Runtime Host stderr 追加写入的日志文件；nil 表示只保留内存日志。
     /// - Returns: 指向 bundle 内 Node 和 Runtime Host 的配置。
     /// - Throws: bundle 没有 resources URL 时抛出 RuntimeBridgeError。
     static func bundled(
         bundle: Bundle = .main,
         workingDirectoryURL: URL,
-        environment: [String: String] = [:]
+        environment: [String: String] = [:],
+        stderrLogFileURL: URL? = nil
     ) throws -> RuntimeBridgeConfiguration {
         guard let resourcesURL = bundle.resourceURL else {
             throw RuntimeBridgeError.bundleResourceDirectoryUnavailable
@@ -198,21 +212,31 @@ nonisolated struct RuntimeBridgeConfiguration: Equatable, Sendable {
         return RuntimeBridgeConfiguration(
             nodeExecutableURL: runtimeRoot.appendingPathComponent("node/bin/node", isDirectory: false),
             runtimeHostScriptURL: runtimeRoot.appendingPathComponent("host/runtime-host.js", isDirectory: false),
+            piModuleEntryURL: runtimeRoot.appendingPathComponent(
+                "pi/node_modules/@earendil-works/pi-coding-agent/dist/index.js",
+                isDirectory: false
+            ),
             workingDirectoryURL: workingDirectoryURL,
-            environment: environment
+            environment: environment,
+            stderrLogFileURL: stderrLogFileURL
         )
     }
 
     /// 校验 RuntimeBridge 启动所需的本地文件。
     ///
     /// - Parameter fileManager: 文件系统访问对象。
-    /// - Throws: Node 不存在、不可执行或 Runtime Host 入口不存在时抛出 RuntimeBridgeError。
+    /// - Throws: Node 不存在、不可执行、Runtime Host 入口不存在或已配置的 Pi runtime 入口不存在时抛出
+    ///   RuntimeBridgeError。
     func validate(fileManager: FileManager = .default) throws {
         guard fileManager.isExecutableFile(atPath: nodeExecutableURL.path) else {
             throw RuntimeBridgeError.nodeExecutableUnavailable(path: nodeExecutableURL.path)
         }
         guard fileManager.fileExists(atPath: runtimeHostScriptURL.path) else {
             throw RuntimeBridgeError.runtimeHostScriptUnavailable(path: runtimeHostScriptURL.path)
+        }
+        if let piModuleEntryURL,
+           !fileManager.fileExists(atPath: piModuleEntryURL.path) {
+            throw RuntimeBridgeError.piRuntimeUnavailable(path: piModuleEntryURL.path)
         }
     }
 }
@@ -227,6 +251,9 @@ nonisolated enum RuntimeBridgeError: Error, Equatable, Sendable {
 
     /// Runtime Host 脚本不存在。
     case runtimeHostScriptUnavailable(path: String)
+
+    /// Pi runtime 入口不存在。
+    case piRuntimeUnavailable(path: String)
 
     /// Runtime Host 进程已经启动。
     case processAlreadyRunning
@@ -266,6 +293,8 @@ extension RuntimeBridgeError: LocalizedError {
             "Node executable is unavailable: \(path)"
         case let .runtimeHostScriptUnavailable(path):
             "Runtime Host script is unavailable: \(path)"
+        case let .piRuntimeUnavailable(path):
+            "Pi runtime is unavailable: \(path)"
         case .processAlreadyRunning:
             "Runtime Host process is already running."
         case .processNotRunning:
@@ -280,8 +309,14 @@ extension RuntimeBridgeError: LocalizedError {
             "Failed to write Runtime Host command: \(reason)"
         case let .eventDecodeFailed(line, reason):
             "Failed to decode Runtime Host event '\(line)': \(reason)"
-        case let .runtimeError(code, message, _, _):
-            "Runtime Host returned error \(code): \(message)"
+        case let .runtimeError(code, message, _, details):
+            if let reason = details?["reason"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !reason.isEmpty,
+               reason != message {
+                "Runtime Host returned error \(code): \(message)\n\(reason)"
+            } else {
+                "Runtime Host returned error \(code): \(message)"
+            }
         case let .unexpectedEvent(name, replyTo):
             "Unexpected Runtime Host event '\(name)' for command \(replyTo ?? "nil")."
         }
@@ -770,6 +805,38 @@ nonisolated final class RuntimeBridge: @unchecked Sendable {
                 return
             }
             self.stderrText += String(data: data, encoding: .utf8) ?? ""
+            self.appendStderrLogFile(data)
+        }
+    }
+
+    /// 将 Runtime Host stderr 追加写入配置的日志文件。
+    ///
+    /// 文件日志是诊断辅助能力，写入失败不会中断 Runtime Host 协议；调用方仍可通过内存 stderr
+    /// 文本获得当前进程的错误信息。
+    ///
+    /// - Parameter data: stderr 原始字节。
+    private func appendStderrLogFile(_ data: Data) {
+        guard let stderrLogFileURL = configuration.stderrLogFileURL else {
+            return
+        }
+
+        do {
+            try fileManager.createDirectory(
+                at: stderrLogFileURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            if fileManager.fileExists(atPath: stderrLogFileURL.path) {
+                let handle = try FileHandle(forWritingTo: stderrLogFileURL)
+                defer {
+                    try? handle.close()
+                }
+                try handle.seekToEnd()
+                try handle.write(contentsOf: data)
+            } else {
+                try data.write(to: stderrLogFileURL, options: .atomic)
+            }
+        } catch {
+            return
         }
     }
 

@@ -239,6 +239,7 @@ AgentMac/
 职责：
 
 - 应用启动和根视图组合。
+- 首次启动时初始化 Application Support 数据目录。
 - 窗口布局和导航。
 - 主窗口默认承载面向 Agent 使用场景的会话工作台。
 - 通过管理入口打开独立的 Agent Library 和 Resource Library 窗口。
@@ -258,8 +259,10 @@ AgentMac/
 当前文件划分：
 
 - `AgentMacApp.swift`：声明主窗口、Agent Library 窗口和 Resource Library 窗口。
-- `AppFeature.swift`：根 TCA Feature，组合固定 coding agent 会话页面。
-- `AppView.swift`：根视图、会话工作台和管理窗口入口 SwiftUI 渲染。
+- `AppFeature.swift`：根 TCA Feature，组合固定 coding agent 会话页面，并编排首次启动初始化。
+- `AppView.swift`：根视图、启动错误提示、会话工作台和管理窗口入口 SwiftUI 渲染。
+- `AppStartupClient.swift`：启动初始化的 TCA dependency 边界。live 实现内部调用 `FileStore.initialize()`，
+  reducer 和 SwiftUI View 只依赖该 dependency。
 - `AgentFeature.swift`：Agent 管理页面 state、action、reducer 和异步 effect 编排。
 - `AgentView.swift`：Agent 列表、创建表单和编辑表单 SwiftUI 渲染。
 - `AppAgentClient.swift`：Agent 管理的 TCA dependency 边界。live 实现内部调用

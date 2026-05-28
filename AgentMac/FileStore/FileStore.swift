@@ -54,6 +54,11 @@ nonisolated struct AppDataLayout {
         rootDirectory.appendingPathComponent("sessions", isDirectory: true)
     }
 
+    /// 运行时和应用诊断日志目录。
+    var logsDirectory: URL {
+        rootDirectory.appendingPathComponent("logs", isDirectory: true)
+    }
+
     /// 应用级设置文件路径。
     ///
     /// `settings.yaml` 不保存 Agent 定义，只保存应用级配置。默认内容由
@@ -65,7 +70,7 @@ nonisolated struct AppDataLayout {
     /// FileStore 初始化时必须存在的目录集合。
     ///
     /// 返回值包含根目录本身以及第一版需要的 agents、library、knowledge、skills、
-    /// tools、sessions 目录。顺序保持从父目录到子目录，便于创建目录时保持清晰。
+    /// tools、sessions、logs 目录。顺序保持从父目录到子目录，便于创建目录时保持清晰。
     var requiredDirectories: [URL] {
         [
             rootDirectory,
@@ -75,6 +80,7 @@ nonisolated struct AppDataLayout {
             skillsDirectory,
             toolsDirectory,
             sessionsDirectory,
+            logsDirectory,
         ]
     }
 }

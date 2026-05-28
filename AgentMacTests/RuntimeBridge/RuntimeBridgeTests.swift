@@ -21,6 +21,66 @@ struct RuntimeBridgeTests {
         #expect(event.replyTo == "cmd_001")
     }
 
+    /// 验证测试宿主 app bundle 内的 Runtime 结构可被 RuntimeBridge 定位并启动。
+    @Test func bundledRuntimeFromAppBundleStartsWithoutDevelopmentMode() throws {
+        let root = temporaryRoot()
+        defer { removeTemporaryRoot(root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let configuration = try RuntimeBridgeConfiguration.bundled(
+            bundle: .main,
+            workingDirectoryURL: root,
+            environment: [
+                "AGENTMAC_RUNTIMEHOST_USE_MOCK_PI": "1",
+                "AGENTMAC_PI_AGENT_DIR": root.appending(path: "Pi", directoryHint: .isDirectory).path,
+            ]
+        )
+
+        #expect(configuration.nodeExecutableURL.path.contains("AgentMac.app/Contents/Resources/Runtime/node/bin/node"))
+        #expect(configuration.runtimeHostScriptURL.path.contains("AgentMac.app/Contents/Resources/Runtime/host/runtime-host.js"))
+        #expect(configuration.workingDirectoryURL == root.standardizedFileURL)
+        try configuration.validate()
+
+        let piModulesURL = configuration.runtimeHostScriptURL
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appending(path: "pi/node_modules/@earendil-works", directoryHint: .isDirectory)
+        #expect(FileManager.default.fileExists(atPath: piModulesURL.path))
+
+        let bridge = RuntimeBridge(configuration: configuration)
+        defer { bridge.stop() }
+
+        try bridge.start()
+        let event = try bridge.ping()
+        let sessionId = try bridge.startSession(workspacePath: root.path)
+
+        #expect(event.name == "pong")
+        #expect(sessionId == "ses_001")
+    }
+
+    /// 验证配置校验会在 Swift 侧提前报告缺失的 Pi runtime。
+    @Test func configurationValidationReportsMissingPiRuntime() throws {
+        let root = temporaryRoot()
+        defer { removeTemporaryRoot(root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let missingPiEntry = root.appending(path: "missing-pi/dist/index.js", directoryHint: .notDirectory)
+        let configuration = RuntimeBridgeConfiguration(
+            nodeExecutableURL: try vendoredNodeURL(),
+            runtimeHostScriptURL: repoRoot.appending(path: "AgentMac/RuntimeHost/runtime-host.js", directoryHint: .notDirectory),
+            piModuleEntryURL: missingPiEntry,
+            workingDirectoryURL: root
+        )
+
+        do {
+            try configuration.validate()
+            Issue.record("Expected missing Pi runtime to be rejected.")
+        } catch let RuntimeBridgeError.piRuntimeUnavailable(path) {
+            #expect(path == missingPiEntry.standardizedFileURL.path)
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
+
     /// 验证 RuntimeBridge 能通过 mock RuntimeHost 跑通 session、消息流和 abort。
     @Test func fixedCodingAgentMockSessionStreamsAndAborts() throws {
         let (bridge, root) = try makeBridge()
@@ -173,10 +233,13 @@ struct RuntimeBridgeTests {
         let root = temporaryRoot()
         defer { removeTemporaryRoot(root) }
         let script = root.appending(path: "exit.js", directoryHint: .notDirectory)
+        let logFile = root.appending(path: "logs/runtime-host.log", directoryHint: .notDirectory)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         try "console.error('runtime boom'); process.exit(7);\n".write(to: script, atomically: true, encoding: .utf8)
 
-        let bridge = RuntimeBridge(configuration: try makeConfiguration(root: root, hostScriptURL: script))
+        let bridge = RuntimeBridge(
+            configuration: try makeConfiguration(root: root, hostScriptURL: script, stderrLogFileURL: logFile)
+        )
         defer { bridge.stop() }
 
         try bridge.start()
@@ -187,6 +250,7 @@ struct RuntimeBridgeTests {
             #expect(status == 7)
             #expect(stderr.contains("runtime boom"))
             #expect(bridge.stderrLog().contains("runtime boom"))
+            #expect(try String(contentsOf: logFile, encoding: .utf8).contains("runtime boom"))
         } catch {
             Issue.record("Unexpected error: \(error)")
         }
@@ -219,7 +283,7 @@ struct RuntimeBridgeTests {
         defer { bridge.stop() }
 
         try bridge.start()
-        Thread.sleep(forTimeInterval: 0.2)
+        Thread.sleep(forTimeInterval: 1.0)
         bridge.stop()
 
         try bridge.start()
@@ -280,13 +344,15 @@ struct RuntimeBridgeTests {
     private func makeConfiguration(
         root: URL,
         hostScriptURL: URL,
-        environment: [String: String] = [:]
+        environment: [String: String] = [:],
+        stderrLogFileURL: URL? = nil
     ) throws -> RuntimeBridgeConfiguration {
         RuntimeBridgeConfiguration(
             nodeExecutableURL: try vendoredNodeURL(),
             runtimeHostScriptURL: hostScriptURL,
             workingDirectoryURL: root,
-            environment: environment
+            environment: environment,
+            stderrLogFileURL: stderrLogFileURL
         )
     }
 

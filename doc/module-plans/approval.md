@@ -86,7 +86,7 @@ Approval
 - [x] 将审批结果回传 Session。
 - [x] 将审批结果回传 Runtime Host。
 - [x] 编写 Approval 单元测试。
-- [ ] 手工验证批准和拒绝路径。
+- [x] 手工验证批准和拒绝路径。
 
 ## 验收标准
 

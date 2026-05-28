@@ -14,7 +14,13 @@ struct AppView: View {
     var body: some View {
         WithPerceptionTracking {
             NavigationStack {
-                SessionView(store: store.scope(state: \.session, action: \.session))
+                VStack(spacing: 0) {
+                    if let startupErrorMessage = store.startupErrorMessage {
+                        StartupErrorBanner(message: startupErrorMessage)
+                        Divider()
+                    }
+                    SessionView(store: store.scope(state: \.session, action: \.session))
+                }
                     .navigationTitle("AgentMac")
                     .toolbar {
                         ToolbarItemGroup {
@@ -35,7 +41,32 @@ struct AppView: View {
                     }
             }
             .frame(minWidth: 960, minHeight: 620)
+            .task {
+                store.send(.task)
+            }
         }
+    }
+}
+
+/// 启动初始化错误提示。
+private struct StartupErrorBanner: View {
+    /// 错误信息。
+    let message: String
+
+    /// 提示内容。
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.yellow)
+            Text(message)
+                .font(.callout)
+                .foregroundStyle(.red)
+                .textSelection(.enabled)
+            Spacer()
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(Color(nsColor: .windowBackgroundColor))
     }
 }
 
@@ -44,9 +75,14 @@ private struct SessionView: View {
     /// 会话页面 store。
     @Perception.Bindable var store: StoreOf<SessionFeature>
 
+    /// 当前展示中的工具审批请求副本，避免 SwiftUI sheet 的 escaping binding 直接读取 Perception state。
+    @State private var presentedToolApprovalRequest: ToolApprovalRequest?
+
     /// 页面内容。
     var body: some View {
         WithPerceptionTracking {
+            let pendingToolApprovalRequest = store.pendingToolApprovalRequest
+
             VStack(spacing: 0) {
                 header
                 Divider()
@@ -55,32 +91,42 @@ private struct SessionView: View {
                 composer
             }
             .background(Color(nsColor: .windowBackgroundColor))
-            .sheet(item: pendingToolApprovalBinding) { request in
-                ToolApprovalSheet(
-                    request: request,
-                    isResolving: store.isResolvingToolApproval,
-                    onAllow: {
-                        store.send(.allowToolApprovalButtonTapped(request.toolCallID))
-                    },
-                    onDeny: {
-                        store.send(.denyToolApprovalButtonTapped(request.toolCallID))
-                    }
-                )
+            .onAppear {
+                presentedToolApprovalRequest = pendingToolApprovalRequest
+            }
+            .onChange(of: pendingToolApprovalRequest) { request in
+                presentedToolApprovalRequest = request
+            }
+            .sheet(item: presentedToolApprovalBinding) { request in
+                WithPerceptionTracking {
+                    ToolApprovalSheet(
+                        request: request,
+                        isResolving: store.isResolvingToolApproval,
+                        onAllow: {
+                            store.send(.allowToolApprovalButtonTapped(request.toolCallID))
+                        },
+                        onDeny: {
+                            store.send(.denyToolApprovalButtonTapped(request.toolCallID))
+                        }
+                    )
+                }
             }
         }
     }
 
-    private var pendingToolApprovalBinding: Binding<ToolApprovalRequest?> {
+    private var presentedToolApprovalBinding: Binding<ToolApprovalRequest?> {
         Binding(
             get: {
-                store.pendingToolApprovalRequest
+                presentedToolApprovalRequest
             },
             set: { newValue in
                 guard newValue == nil,
-                      let toolCallID = store.pendingToolApprovalRequest?.toolCallID
+                      let toolCallID = presentedToolApprovalRequest?.toolCallID
                 else {
+                    presentedToolApprovalRequest = newValue
                     return
                 }
+                presentedToolApprovalRequest = nil
                 store.send(.toolApprovalSheetDismissed(toolCallID))
             }
         )

@@ -214,6 +214,9 @@ Pi 会话。
 必须自动化覆盖：
 
 - 创建 session 成功后保存 `ChatSessionSnapshot` 并启动快照订阅 effect。
+- 根 AppFeature 启动时初始化 Application Support 数据目录，且成功后不重复初始化。
+- 启动初始化失败时展示错误。
+- Runtime 常见启动错误映射为包含修复方向的 UI 提示。
 - 第一阶段已有当前 session 时不会再次创建本地 session。
 - 启动 Runtime session 的进行中标记和成功清理。
 - 发送消息时裁剪空白、清空输入并调用 dependency。
@@ -248,7 +251,9 @@ Pi 会话。
 
 ```text
 AgentMacTests/AppShell/AgentFeatureTests.swift
+AgentMacTests/AppShell/AppFeatureTests.swift
 AgentMacTests/AppShell/AppResourceClientTests.swift
+AgentMacTests/AppShell/AppSessionClientTests.swift
 AgentMacTests/AppShell/ResourceFeatureTests.swift
 AgentMacTests/AppShell/SessionFeatureTests.swift
 ```
@@ -326,6 +331,12 @@ Agent 管理、资源管理和 Approval UI 分别补 reducer 测试；必要的 
 ```text
 xcodebuild test -scheme AgentMac -destination 'platform=macOS'
 ```
+
+默认 `AgentMac` scheme 的 TestAction 只运行 `AgentMacTests`，并关闭测试目标并行执行，保证
+app-hosted 单元测试稳定结束。`AgentMacUITests` 不放入默认验证链路，避免 UI 启动和性能测试
+反复启动/终止宿主 App 干扰单元测试；需要 UI 验证时单独运行 UI test target 或执行手工 UI 验收。
+当前 `AgentMacTests` 仍依赖 app host，因为业务代码还直接位于 `AgentMac` app target；如需彻底改为
+非 app-hosted 单元测试，应先把可测试业务代码拆入独立 framework 或 Swift package target。
 
 涉及 RuntimeHost 时，还应运行 RuntimeHost 命令行协议测试。
 

@@ -217,6 +217,23 @@ Swift 侧错误也可以写入：
 4. 不自动覆盖用户已有文件。
 5. 可以创建一个示例 Agent，但该能力可后置。
 
+当前 AppShell 在主窗口启动时通过 `AppStartupClient` 触发 `FileStore.initialize()`。如果初始化
+失败，UI 在主窗口顶部展示可复制的错误提示；后续 Agent、Resource、Session dependency 仍会在各自
+首次使用时复用同一初始化规则。
+
+## 常见错误提示
+
+阶段 9 的 AppShell 错误提示应覆盖：
+
+- app bundle 中缺少 Node、Runtime Host 或 Pi runtime。
+- `AGENTMAC_RUNTIME_MODE=development` 但未提供 Node 或 Runtime Host 路径。
+- Runtime Host 启动后异常退出或 ping 超时。
+- Pi 模型或认证配置失败。
+
+提示应包含用户下一步能执行的修复方向，例如重建 app bundle、运行
+`scripts/update-vendored-runtime.mjs`、移除误设的 development 环境变量，或查看
+`~/Library/Application Support/AgentMac/logs/runtime-host.log`。
+
 ## 验证步骤
 
 开发阶段验证：

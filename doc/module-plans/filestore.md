@@ -27,6 +27,7 @@ FileStore
   - `library/skills/`
   - `library/tools/`
   - `sessions/`
+  - `logs/`
 - 初始化 `settings.yaml`，如果文件不存在则创建默认文件。
 
 ### 文件读写
