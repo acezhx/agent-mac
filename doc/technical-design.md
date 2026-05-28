@@ -602,7 +602,7 @@ RuntimeHost
   -> Pi runtime
 ```
 
-后续实现 `Approval` 后，再增加这些依赖：
+`Approval` 实现后，当前依赖还包括：
 
 ```text
 AppShell

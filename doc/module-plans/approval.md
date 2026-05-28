@@ -7,14 +7,7 @@
 
 ## 依赖关系
 
-实现前：
-
-```text
-Approval
-  -> not implemented
-```
-
-实现后：
+当前实现依赖：
 
 ```text
 AppShell

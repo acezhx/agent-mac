@@ -9,7 +9,7 @@
 3. Node Runtime Host 可以启动固定的 Pi coding agent。
 4. 用户可以从 macOS UI 发送消息。
 5. assistant 回复可以流式显示在 UI 中。
-6. 后续再接入文件型 Agent 配置、资源组合和工具审批。
+6. Agent/Resource 管理和工具审批闭环已补入第一版；可配置 Agent 会话和资源选择仍后续接入。
 
 第一阶段不做数据库、资源版本管理、发布回滚、向量索引和团队同步。
 
@@ -27,8 +27,8 @@ FileStore
 -> 集成打磨
 ```
 
-`Approval` 后置。基础 chat session 阶段先保留审批扩展点，遇到需要审批的工具请求时默认
-拒绝或返回 unsupported。
+`Approval` 已作为后置模块补入。基础 chat session 阶段曾先保留审批扩展点；当前第一版已支持
+工具审批请求展示、allow/deny 回传和默认谨慎策略。
 
 ## 前置契约文档
 

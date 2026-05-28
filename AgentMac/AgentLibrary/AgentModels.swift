@@ -2,8 +2,8 @@ import Foundation
 
 /// Agent 权限策略。
 ///
-/// 该值只表示 `agent.yaml` 中保存的用户意图。第一版审批模块尚未实现时，`ask` 的运行时含义由
-/// 后续 `Session` 或 `RuntimeHost` 按默认拒绝策略解释。
+/// 该值只表示 `agent.yaml` 中保存的用户意图。运行时由 `ApprovalService` 和 `Session`
+/// 解释为自动批准、请求用户确认或拒绝。
 nonisolated enum PermissionDecision: String, Equatable, CaseIterable {
     /// 允许对应类型的请求。
     case allow
@@ -217,4 +217,3 @@ nonisolated struct ResolvedAgentConfig: Equatable {
     /// 会话工作区绝对路径。
     let workspacePath: String
 }
-
