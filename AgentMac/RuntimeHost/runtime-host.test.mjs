@@ -67,6 +67,33 @@ test("unknown command returns unsupported command error", async (t) => {
   assert.equal(event.payload.recoverable, true);
 });
 
+test("listModelCatalog returns mock model summaries for requested providers", async (t) => {
+  const host = startRuntimeHost(t);
+
+  host.writeCommand({
+    type: "command",
+    id: "cmd_models",
+    name: "listModelCatalog",
+    payload: {
+      providerIDs: ["deepseek"],
+    },
+  });
+
+  const event = await host.readEvent();
+  assert.equal(event.type, "event");
+  assert.equal(event.replyTo, "cmd_models");
+  assert.equal(event.name, "modelCatalogListed");
+  assert.deepEqual(event.payload.models, [
+    {
+      providerID: "deepseek",
+      id: "deepseek-v4-flash",
+      name: "DeepSeek V4 Flash",
+      supportsReasoning: true,
+      supportedThinkingLevels: ["off", "high", "xhigh"],
+    },
+  ]);
+});
+
 test("fixed coding agent session starts and streams mock message", async (t) => {
   const host = startRuntimeHost(t);
 
@@ -376,6 +403,172 @@ test("createPiSession enables approved Pi built-in tools", async () => {
   }
 });
 
+test("loginOAuthProvider delegates openai-codex login to Pi AuthStorage", async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), "agentmac-runtimehost-oauth-"));
+  const previousAgentDir = process.env.AGENTMAC_PI_AGENT_DIR;
+  process.env.AGENTMAC_PI_AGENT_DIR = join(tempDir, "agent");
+
+  let authPath;
+  let loginProviderId;
+  const host = createInProcessRuntimeHost();
+  host.piRuntime = {
+    module: {
+      AuthStorage: {
+        create(path) {
+          authPath = path;
+          return {
+            async login(providerId, callbacks) {
+              loginProviderId = providerId;
+              callbacks.onAuth({
+                url: "https://auth.example.test/oauth",
+                instructions: "Complete login.",
+              });
+              callbacks.onProgress("Waiting for browser callback.");
+            },
+          };
+        },
+      },
+    },
+    entryPath: "/tmp/fake-pi-entry.js",
+  };
+
+  try {
+    await host.loginOAuthProvider({
+      id: "cmd_oauth",
+      payload: {
+        providerID: "openai-codex",
+      },
+    });
+
+    assert.equal(authPath, join(tempDir, "agent", "auth.json"));
+    assert.equal(loginProviderId, "openai-codex");
+    assert.deepEqual(host.events, [
+      {
+        type: "event",
+        id: "evt_001",
+        replyTo: "cmd_oauth",
+        name: "oauthAuthorizationRequested",
+        payload: {
+          providerID: "openai-codex",
+          url: "https://auth.example.test/oauth",
+          instructions: "Complete login.",
+        },
+      },
+      {
+        type: "event",
+        id: "evt_002",
+        replyTo: "cmd_oauth",
+        name: "oauthProgressUpdated",
+        payload: {
+          providerID: "openai-codex",
+          message: "Waiting for browser callback.",
+        },
+      },
+      {
+        type: "event",
+        id: "evt_003",
+        replyTo: "cmd_oauth",
+        name: "oauthLoginCompleted",
+        payload: {
+          providerID: "openai-codex",
+        },
+      },
+    ]);
+  } finally {
+    if (previousAgentDir === undefined) {
+      delete process.env.AGENTMAC_PI_AGENT_DIR;
+    } else {
+      process.env.AGENTMAC_PI_AGENT_DIR = previousAgentDir;
+    }
+  }
+});
+
+test("loginOAuthProvider delegates anthropic login to Pi AuthStorage", async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), "agentmac-runtimehost-oauth-"));
+  const previousAgentDir = process.env.AGENTMAC_PI_AGENT_DIR;
+  process.env.AGENTMAC_PI_AGENT_DIR = join(tempDir, "agent");
+
+  let authPath;
+  let loginProviderId;
+  const host = createInProcessRuntimeHost();
+  host.piRuntime = {
+    module: {
+      AuthStorage: {
+        create(path) {
+          authPath = path;
+          return {
+            async login(providerId, callbacks) {
+              loginProviderId = providerId;
+              callbacks.onAuth({
+                url: "https://claude.example.test/oauth",
+                instructions: "Complete Anthropic login.",
+              });
+            },
+          };
+        },
+      },
+    },
+    entryPath: "/tmp/fake-pi-entry.js",
+  };
+
+  try {
+    await host.loginOAuthProvider({
+      id: "cmd_anthropic_oauth",
+      payload: {
+        providerID: "anthropic",
+      },
+    });
+
+    assert.equal(authPath, join(tempDir, "agent", "auth.json"));
+    assert.equal(loginProviderId, "anthropic");
+    assert.deepEqual(host.events, [
+      {
+        type: "event",
+        id: "evt_001",
+        replyTo: "cmd_anthropic_oauth",
+        name: "oauthAuthorizationRequested",
+        payload: {
+          providerID: "anthropic",
+          url: "https://claude.example.test/oauth",
+          instructions: "Complete Anthropic login.",
+        },
+      },
+      {
+        type: "event",
+        id: "evt_002",
+        replyTo: "cmd_anthropic_oauth",
+        name: "oauthLoginCompleted",
+        payload: {
+          providerID: "anthropic",
+        },
+      },
+    ]);
+  } finally {
+    if (previousAgentDir === undefined) {
+      delete process.env.AGENTMAC_PI_AGENT_DIR;
+    } else {
+      process.env.AGENTMAC_PI_AGENT_DIR = previousAgentDir;
+    }
+  }
+});
+
+test("loginOAuthProvider rejects unsupported providers", async () => {
+  const host = createInProcessRuntimeHost();
+
+  await host.loginOAuthProvider({
+    id: "cmd_oauth_invalid",
+    payload: {
+      providerID: "deepseek",
+    },
+  });
+
+  const event = host.events.shift();
+  assert.equal(event.type, "event");
+  assert.equal(event.replyTo, "cmd_oauth_invalid");
+  assert.equal(event.name, "error");
+  assert.equal(event.payload.code, "invalid_command");
+});
+
 test("Pi tool_call approval hook allows approved built-in tool calls", async () => {
   const host = createInProcessRuntimeHost();
   assert.deepEqual(host.toolApprovalRequestFromEvent({
@@ -666,6 +859,38 @@ test("fixed coding agent streams through Pi SDK faux provider", {
   }
 
   assert.equal(assistantText, "pong from pi sdk");
+});
+
+test("listModelCatalog loads Pi model metadata for requested providers", {
+  skip: realPiRuntimeSkipReason(),
+}, async (t) => {
+  const tempDir = await mkdtemp(join(tmpdir(), "agentmac-runtimehost-models-"));
+  const host = startRuntimeHost(t, {
+    nodePath: vendorNodePath,
+    useMockPi: false,
+    env: {
+      AGENTMAC_PI_AGENT_DIR: join(tempDir, "agent"),
+      AGENTMAC_PI_MODULE_ENTRY: vendorPiEntryPath,
+    },
+  });
+
+  host.writeCommand({
+    type: "command",
+    id: "cmd_models",
+    name: "listModelCatalog",
+    payload: {
+      providerIDs: ["xiaomi"],
+    },
+  });
+
+  const event = await host.readEvent();
+  assert.equal(event.type, "event");
+  assert.equal(event.replyTo, "cmd_models");
+  assert.equal(event.name, "modelCatalogListed");
+  assert.ok(event.payload.models.length > 0);
+  assert.equal(event.payload.models[0].providerID, "xiaomi");
+  assert.equal(event.payload.models[0].id, "mimo-v2-flash");
+  assert.deepEqual(event.payload.models[0].supportedThinkingLevels, ["off", "minimal", "low", "medium", "high"]);
 });
 
 test("fixed coding agent processes queued commands in input order", {

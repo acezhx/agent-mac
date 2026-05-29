@@ -509,6 +509,29 @@ nonisolated final class RuntimeBridge: @unchecked Sendable {
         return sessionId
     }
 
+    /// 读取 Runtime Host 暴露的 Pi 模型清单。
+    ///
+    /// - Parameters:
+    ///   - providerIDs: 需要返回模型的 provider ID；空数组表示由 Runtime Host 返回全部 provider。
+    ///   - timeout: 等待 `modelCatalogListed` 的秒数。
+    /// - Returns: Runtime Host 返回的模型清单事件。
+    /// - Throws: 进程未启动、写入失败、超时或 Runtime Host 返回 error event 时抛出错误。
+    func listModelCatalog(providerIDs: [String], timeout: TimeInterval = 10) throws -> RuntimeEvent {
+        let command = RuntimeCommand(
+            id: nextCommandID(),
+            name: "listModelCatalog",
+            payload: .object([
+                "providerIDs": .array(providerIDs.map { .string($0) }),
+            ])
+        )
+        try send(command)
+        let event = try readMatchingEvent(replyTo: command.id, timeout: timeout)
+        guard event.name == "modelCatalogListed" else {
+            throw RuntimeBridgeError.unexpectedEvent(name: event.name, replyTo: event.replyTo)
+        }
+        return event
+    }
+
     /// 发送用户消息，并收集直到 `messageCompleted` 的流式事件。
     ///
     /// - Parameters:

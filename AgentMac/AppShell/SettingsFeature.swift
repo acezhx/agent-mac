@@ -54,6 +54,12 @@ struct SettingsFeature {
         /// 是否正在保存 API Key。
         var isSavingAPIKey: Bool
 
+        /// 是否正在执行 OAuth 登录。
+        var isLoggingInOAuth: Bool
+
+        /// 当前正在执行 OAuth 登录的 provider ID。
+        var loggingInOAuthProviderID: String?
+
         /// 是否正在删除 provider 凭据。
         var isRemovingCredential: Bool
 
@@ -70,12 +76,14 @@ struct SettingsFeature {
             self.isLoadingCredentials = false
             self.isSaving = false
             self.isSavingAPIKey = false
+            self.isLoggingInOAuth = false
+            self.loggingInOAuthProviderID = nil
             self.isRemovingCredential = false
         }
 
         /// 是否有设置操作正在运行。
         var hasOperationInFlight: Bool {
-            isLoading || isLoadingCredentials || isSaving || isSavingAPIKey || isRemovingCredential
+            isLoading || isLoadingCredentials || isSaving || isSavingAPIKey || isLoggingInOAuth || isRemovingCredential
         }
 
         /// 是否可以保存当前 API Key 表单。
@@ -179,6 +187,15 @@ struct SettingsFeature {
 
         /// API Key 保存失败。
         case saveAPIKeyFailed(AppProviderAuthClientError)
+
+        /// 用户点击 OAuth/订阅授权连接 provider。
+        case loginOAuthProviderButtonTapped(String)
+
+        /// OAuth/订阅授权登录成功。
+        case loginOAuthSucceeded(ProviderCredentialStatus, AppSettings)
+
+        /// OAuth/订阅授权登录失败。
+        case loginOAuthFailed(AppProviderAuthClientError)
 
         /// 用户点击断开 provider。
         case disconnectProviderButtonTapped(String)
@@ -290,6 +307,52 @@ struct SettingsFeature {
 
             case let .saveAPIKeyFailed(error):
                 state.isSavingAPIKey = false
+                state.errorMessage = error.message
+                return .none
+
+            case let .loginOAuthProviderButtonTapped(providerID):
+                guard !state.hasOperationInFlight,
+                      let provider = ModelProviderCatalog.provider(id: providerID),
+                      provider.supportsOAuth,
+                      ModelProviderCatalog.supportsOAuthLogin(id: providerID)
+                else {
+                    return .none
+                }
+                state.isLoggingInOAuth = true
+                state.loggingInOAuthProviderID = providerID
+                state.errorMessage = nil
+                state.successMessage = nil
+                let previousSettings = state.settings
+                let settings = state.settingsAllowingProvider(providerID)
+                @Dependency(AppSettingsClient.self) var appSettingsClient
+                @Dependency(AppProviderAuthClient.self) var appProviderAuthClient
+                return .run { send in
+                    do {
+                        let savedSettings = try await appSettingsClient.saveSettings(settings)
+                        do {
+                            let status = try await appProviderAuthClient.loginOAuth(providerID)
+                            await send(.loginOAuthSucceeded(status, savedSettings))
+                        } catch {
+                            _ = try? await appSettingsClient.saveSettings(previousSettings)
+                            await send(.loginOAuthFailed(AppProviderAuthClientError(error)))
+                        }
+                    } catch {
+                        await send(.loginOAuthFailed(AppProviderAuthClientError(error)))
+                    }
+                }
+
+            case let .loginOAuthSucceeded(status, settings):
+                state.isLoggingInOAuth = false
+                state.loggingInOAuthProviderID = nil
+                state.populate(with: settings)
+                state.upsertCredentialStatus(status)
+                state.errorMessage = nil
+                state.successMessage = "\(status.providerID) connected."
+                return .none
+
+            case let .loginOAuthFailed(error):
+                state.isLoggingInOAuth = false
+                state.loggingInOAuthProviderID = nil
                 state.errorMessage = error.message
                 return .none
 

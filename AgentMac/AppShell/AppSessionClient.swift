@@ -268,7 +268,7 @@ private actor LiveAppSessionController {
         try fileStore.initialize()
 
         let runtimeBridge = RuntimeBridge(
-            configuration: try runtimeBridgeConfiguration(fileStore: fileStore)
+            configuration: try AppRuntimeBridgeConfigurationFactory.make(fileStore: fileStore)
         )
         let manager = ChatSessionManager(
             fileStore: fileStore,
@@ -314,8 +314,19 @@ private actor LiveAppSessionController {
         }
         return URL(fileURLWithPath: trimmed, isDirectory: true).standardizedFileURL
     }
+}
 
-    private func runtimeBridgeConfiguration(fileStore: FileStore) throws -> RuntimeBridgeConfiguration {
+/// AppShell 使用的 RuntimeBridge 配置工厂。
+///
+/// 聊天会话和 Settings OAuth 登录都必须使用同一个 Application Support、Pi agent 目录和 RuntimeHost
+/// stderr 日志位置，避免不同入口读写不同的 runtime 数据目录。
+nonisolated enum AppRuntimeBridgeConfigurationFactory {
+    /// 生成当前进程环境下的 RuntimeBridge 配置。
+    ///
+    /// - Parameter fileStore: Application Support 文件服务。
+    /// - Returns: 可启动 RuntimeHost 的桥接配置。
+    /// - Throws: runtime 模式或必需路径配置无效时抛出 AppShell 错误。
+    static func make(fileStore: FileStore) throws -> RuntimeBridgeConfiguration {
         let environment = ProcessInfo.processInfo.environment
         let appSupportURL = fileStore.layout.rootDirectory
         let logDirectoryURL = fileStore.layout.logsDirectory
@@ -357,7 +368,7 @@ private actor LiveAppSessionController {
         }
     }
 
-    private func normalizedRuntimeMode(from rawValue: String?) -> String {
+    private static func normalizedRuntimeMode(from rawValue: String?) -> String {
         let mode = rawValue?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
         return mode.isEmpty ? "bundled" : mode
     }

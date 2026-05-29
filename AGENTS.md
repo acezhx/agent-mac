@@ -166,6 +166,26 @@ Prefer existing project conventions over new personal preferences.
 - Avoid global mutable state unless the existing architecture requires it.
 - Do not introduce a new dependency without a concrete need and a clear reason.
 
+### SwiftUI Perception Standards
+
+When editing SwiftUI views backed by TCA perceptible state in this repository:
+
+- Read `doc/module-plans/appshell.md` before changing AppShell SwiftUI views.
+- Wrap every view body that reads a perceptible `StoreOf<...>` state with
+  `WithPerceptionTracking`.
+- Re-wrap extracted computed subviews and escaping ViewBuilder closures that read store state,
+  including `ForEach`, `List` rows, `GeometryReader`, `ScrollViewReader`, `sheet`, `popover`,
+  `alert`, `confirmationDialog`, `toolbar`, `overlay`, and `background`.
+- Treat computed state such as `hasOperationInFlight`, `canSave...`, and `canCreate...` as state
+  reads; they also require perception tracking.
+- Prefer passing plain values into reusable rows and leaf views instead of giving display-only
+  subviews direct store access.
+- Use `@Perception.Bindable` and `$store.field.sending(\.action)` for bindings derived from
+  perceptible state.
+- Ensure every `Picker` selection always has a matching `.tag(...)`, including empty, loading, or
+  unavailable selections. Keep empty placeholder tags stable when reducers may temporarily clear
+  selection during loading or entity switching.
+
 ## Comment Standards
 
 Code comments are part of maintainability and must be kept current.

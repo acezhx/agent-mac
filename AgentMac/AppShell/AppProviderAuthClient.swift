@@ -1,3 +1,4 @@
+import AppKit
 import ComposableArchitecture
 import Foundation
 
@@ -11,8 +12,32 @@ nonisolated struct AppProviderAuthClient: Sendable {
     /// 保存 provider API Key。
     var saveAPIKey: @Sendable (_ providerID: String, _ apiKey: String) async throws -> ProviderCredentialStatus
 
+    /// 通过 OAuth/订阅账号登录 provider。
+    var loginOAuth: @Sendable (_ providerID: String) async throws -> ProviderCredentialStatus
+
     /// 删除 provider 已保存凭据。
     var removeCredential: @Sendable (_ providerID: String) async throws -> ProviderCredentialStatus
+
+    /// 创建 provider 授权 dependency。
+    ///
+    /// - Parameters:
+    ///   - loadCredentialStatuses: 加载 provider 凭据状态的操作。
+    ///   - saveAPIKey: 保存 provider API Key 的操作。
+    ///   - loginOAuth: 执行 provider OAuth 登录的操作；未注入时抛出测试错误。
+    ///   - removeCredential: 删除 provider 凭据的操作。
+    init(
+        loadCredentialStatuses: @escaping @Sendable (_ providerIDs: [String]) async throws -> [ProviderCredentialStatus],
+        saveAPIKey: @escaping @Sendable (_ providerID: String, _ apiKey: String) async throws -> ProviderCredentialStatus,
+        loginOAuth: @escaping @Sendable (_ providerID: String) async throws -> ProviderCredentialStatus = { _ in
+            throw AppProviderAuthClientError("AppProviderAuthClient.loginOAuth is not implemented for this test.")
+        },
+        removeCredential: @escaping @Sendable (_ providerID: String) async throws -> ProviderCredentialStatus
+    ) {
+        self.loadCredentialStatuses = loadCredentialStatuses
+        self.saveAPIKey = saveAPIKey
+        self.loginOAuth = loginOAuth
+        self.removeCredential = removeCredential
+    }
 }
 
 /// AppShell provider 授权操作对 UI 暴露的结构化错误。
@@ -33,6 +58,8 @@ nonisolated struct AppProviderAuthClientError: Error, Equatable, Sendable {
     init(_ error: Error) {
         if let error = error as? AppProviderAuthClientError {
             self = error
+        } else if error is RuntimeBridgeError || error is SessionError {
+            self.message = AppSessionClientError(error).message
         } else if let localizedDescription = error as? LocalizedError,
                   let description = localizedDescription.errorDescription {
             self.message = description
@@ -51,6 +78,9 @@ extension AppProviderAuthClient: DependencyKey {
         saveAPIKey: { providerID, apiKey in
             try await LiveProviderAuthController.shared.saveAPIKey(providerID: providerID, apiKey: apiKey)
         },
+        loginOAuth: { providerID in
+            try await LiveProviderAuthController.shared.loginOAuth(providerID: providerID)
+        },
         removeCredential: { providerID in
             try await LiveProviderAuthController.shared.removeCredential(providerID: providerID)
         }
@@ -63,6 +93,9 @@ extension AppProviderAuthClient: DependencyKey {
         },
         saveAPIKey: { _, _ in
             throw AppProviderAuthClientError("AppProviderAuthClient.saveAPIKey is not implemented for this test.")
+        },
+        loginOAuth: { _ in
+            throw AppProviderAuthClientError("AppProviderAuthClient.loginOAuth is not implemented for this test.")
         },
         removeCredential: { _ in
             throw AppProviderAuthClientError("AppProviderAuthClient.removeCredential is not implemented for this test.")
@@ -95,6 +128,54 @@ private actor LiveProviderAuthController {
         try authStore().saveAPIKey(providerID: providerID, apiKey: apiKey)
     }
 
+    /// 通过 Pi RuntimeHost 执行 provider OAuth 登录。
+    func loginOAuth(providerID: String) async throws -> ProviderCredentialStatus {
+        guard ModelProviderCatalog.supportsOAuthLogin(id: providerID) else {
+            throw AppProviderAuthClientError("OAuth login currently supports Anthropic and OpenAI Codex only.")
+        }
+
+        let store = try authStore()
+        let bridge = RuntimeBridge(configuration: try AppRuntimeBridgeConfigurationFactory.make(fileStore: store.fileStore))
+        try bridge.start()
+        defer {
+            bridge.stop()
+        }
+        _ = try bridge.ping()
+
+        let commandID = "cmd_oauth_\(UUID().uuidString)"
+        try bridge.send(RuntimeCommand(
+            id: commandID,
+            name: "loginOAuthProvider",
+            payload: .object(["providerID": .string(providerID)])
+        ))
+
+        let deadline = Date().addingTimeInterval(300)
+        while true {
+            let remaining = deadline.timeIntervalSinceNow
+            guard remaining > 0 else {
+                throw RuntimeBridgeError.eventReadTimeout(seconds: 300)
+            }
+            let event = try bridge.readEvent(timeout: remaining)
+            guard event.replyTo == commandID || event.replyTo == nil else {
+                continue
+            }
+            if let runtimeError = runtimeError(from: event) {
+                throw runtimeError
+            }
+
+            switch event.name {
+            case "oauthAuthorizationRequested":
+                try await openOAuthAuthorizationURL(from: event)
+            case "oauthLoginCompleted":
+                return try statusAfterOAuthLogin(providerID: providerID, store: store)
+            case "oauthProgressUpdated", "oauthDeviceCodeRequested":
+                continue
+            default:
+                continue
+            }
+        }
+    }
+
     /// 删除 provider 已保存凭据。
     func removeCredential(providerID: String) throws -> ProviderCredentialStatus {
         try authStore().removeCredential(providerID: providerID)
@@ -109,5 +190,42 @@ private actor LiveProviderAuthController {
         let store = PiAuthStore(fileStore: fileStore)
         self.store = store
         return store
+    }
+
+    private func openOAuthAuthorizationURL(from event: RuntimeEvent) async throws {
+        guard let urlString = event.payload?["url"]?.stringValue,
+              let url = URL(string: urlString)
+        else {
+            throw AppProviderAuthClientError("Runtime Host did not provide a valid OAuth authorization URL.")
+        }
+
+        let opened = await MainActor.run {
+            NSWorkspace.shared.open(url)
+        }
+        guard opened else {
+            throw AppProviderAuthClientError("AgentMac could not open the OAuth authorization URL in the browser.")
+        }
+    }
+
+    private func statusAfterOAuthLogin(providerID: String, store: PiAuthStore) throws -> ProviderCredentialStatus {
+        let status = try store.credentialStatuses(for: [providerID]).first
+            ?? ProviderCredentialStatus(providerID: providerID, hasAPIKey: false, hasOAuth: false)
+        guard status.hasOAuth else {
+            throw AppProviderAuthClientError("OAuth login completed but no OAuth credential was saved for \(providerID).")
+        }
+        return status
+    }
+
+    private func runtimeError(from event: RuntimeEvent) -> RuntimeBridgeError? {
+        guard event.name == "error", let payload = event.payload else {
+            return nil
+        }
+
+        return RuntimeBridgeError.runtimeError(
+            code: payload["code"]?.stringValue ?? "oauth_failed",
+            message: payload["message"]?.stringValue ?? "OAuth login failed.",
+            recoverable: payload["recoverable"]?.boolValue ?? true,
+            details: payload["details"]
+        )
     }
 }

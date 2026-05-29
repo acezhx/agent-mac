@@ -106,20 +106,8 @@ struct SettingsView: View {
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     ScrollView {
-                        VStack(alignment: .leading, spacing: 24) {
-                            providerSection(
-                                title: "API Key 授权",
-                                providers: ModelProviderCatalog.apiKeyProviders,
-                                actionStyle: .apiKey
-                            )
-
-                            providerSection(
-                                title: "OAuth / 订阅授权",
-                                providers: ModelProviderCatalog.oauthProviders,
-                                actionStyle: .oauthPreview
-                            )
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                        providerList(providers: ModelProviderCatalog.providers)
+                            .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
             }
@@ -127,26 +115,21 @@ struct SettingsView: View {
         }
     }
 
-    private func providerSection(
-        title: String,
-        providers: [ModelProviderDefinition],
-        actionStyle: ProviderRowActionStyle
-    ) -> some View {
+    private func providerList(providers: [ModelProviderDefinition]) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text(title)
-                .font(.headline)
-                .padding(.bottom, 8)
-
             VStack(spacing: 0) {
                 ForEach(Array(providers.enumerated()), id: \.element.id) { index, provider in
                     WithPerceptionTracking {
                         ProviderRow(
                             provider: provider,
                             status: credentialStatus(for: provider.id),
-                            actionStyle: actionStyle,
                             isOperationInFlight: store.hasOperationInFlight,
-                            onConnect: {
+                            isConnecting: store.loggingInOAuthProviderID == provider.id,
+                            onAPIKeyConnect: {
                                 store.send(.connectProviderButtonTapped(provider.id))
+                            },
+                            onOAuthConnect: {
+                                store.send(.loginOAuthProviderButtonTapped(provider.id))
                             },
                             onDisconnect: {
                                 store.send(.disconnectProviderButtonTapped(provider.id))
@@ -169,17 +152,13 @@ struct SettingsView: View {
     }
 }
 
-private enum ProviderRowActionStyle {
-    case apiKey
-    case oauthPreview
-}
-
 private struct ProviderRow: View {
     let provider: ModelProviderDefinition
     let status: ProviderCredentialStatus
-    let actionStyle: ProviderRowActionStyle
     let isOperationInFlight: Bool
-    let onConnect: () -> Void
+    let isConnecting: Bool
+    let onAPIKeyConnect: () -> Void
+    let onOAuthConnect: () -> Void
     let onDisconnect: () -> Void
 
     var body: some View {
@@ -216,34 +195,48 @@ private struct ProviderRow: View {
 
     @ViewBuilder
     private var actionButton: some View {
-        switch actionStyle {
-        case .apiKey:
-            if status.hasAPIKey {
-                Button(role: .destructive) {
-                    onDisconnect()
-                } label: {
-                    Label("断开", systemImage: "xmark")
-                }
-                .disabled(isOperationInFlight)
-            } else {
-                Button {
-                    onConnect()
-                } label: {
-                    Label("连接", systemImage: "plus")
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.large)
-                .disabled(isOperationInFlight)
-            }
-
-        case .oauthPreview:
-            Button {
+        if status.isConnected {
+            Button(role: .destructive) {
+                onDisconnect()
             } label: {
-                Label(status.hasOAuth ? "已连接" : "稍后支持", systemImage: status.hasOAuth ? "checkmark" : "clock")
+                Label("断开", systemImage: "xmark")
             }
-            .buttonStyle(.bordered)
-            .controlSize(.large)
-            .disabled(true)
+            .disabled(isOperationInFlight)
+        } else {
+            HStack(spacing: 8) {
+                if provider.supportsAPIKey {
+                    Button {
+                        onAPIKeyConnect()
+                    } label: {
+                        Label("API Key", systemImage: "key")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.large)
+                    .disabled(isOperationInFlight)
+                }
+
+                if ModelProviderCatalog.supportsOAuthLogin(id: provider.id) {
+                    Button {
+                        onOAuthConnect()
+                    } label: {
+                        Label(
+                            isConnecting ? "连接中" : "订阅",
+                            systemImage: isConnecting ? "hourglass" : "person.badge.key"
+                        )
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.large)
+                    .disabled(isOperationInFlight)
+                } else if provider.supportsOAuth {
+                    Button {
+                    } label: {
+                        Label("稍后支持", systemImage: "clock")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.large)
+                    .disabled(true)
+                }
+            }
         }
     }
 }

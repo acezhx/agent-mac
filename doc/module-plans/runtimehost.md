@@ -32,10 +32,18 @@ RuntimeHost
 - 支持错误事件。
 - 支持基础命令：
   - `ping`
+  - `listModelCatalog`
   - `startSession`
   - `sendMessage`
   - `abortSession`
 - 第一阶段命令字段保持最小。
+
+### 模型清单
+
+- 支持 `listModelCatalog` command。
+- mock 模式返回稳定模型清单，供 RuntimeHost/RuntimeBridge 和 AppShell reducer 测试使用。
+- Pi 模式从 `@earendil-works/pi-ai/dist/models.js` 读取 provider、model 和 supported thinking levels。
+- `listModelCatalog` 只返回模型摘要，不写入 `agent.yaml`、`settings.yaml` 或 `auth.json`。
 
 ### Mock 流式事件
 
@@ -84,6 +92,7 @@ RuntimeHost
 - [x] 实现 stdout JSONL writer。
 - [x] 定义 command/event envelope。
 - [x] 实现 `ping`。
+- [x] 实现 `listModelCatalog` 模型清单 command。
 - [x] 实现 mock `startSession`。
 - [x] 实现 mock `sendMessage` streaming。
 - [x] 实现 `abortSession` 占位。
@@ -98,6 +107,7 @@ RuntimeHost
 
 - 命令行启动 Runtime Host 后进程保持运行。
 - 输入 `ping` command 后输出 `pong` event。
+- 输入 `listModelCatalog` command 后输出 provider 过滤后的 `modelCatalogListed` event。
 - 输入非法 JSON 后输出 protocol error，进程不崩溃。
 - 输入未知 command 后输出 unsupported command。
 - mock 模式下 `sendMessage` 能输出多个 delta 和一个 completed。

@@ -307,7 +307,7 @@ Agent session 后续再接入。
 ### AppSettings
 
 `AppSettings` 负责 app 级 `settings.yaml` 的模型、轻量 YAML 编解码和读写边界，并维护 Settings
-页面使用的 Pi provider 目录和 `Pi/auth.json` API Key 存储边界。
+页面使用的 Pi provider 目录和 `Pi/auth.json` API Key/OAuth 状态存储边界。
 
 职责：
 
@@ -315,12 +315,13 @@ Agent session 后续再接入。
 - 为旧版或缺失字段的 settings 提供默认值。
 - 保存 Runtime 使用偏好和 Agent 可选择的模型 provider 白名单。
 - 定义当前内置 Pi 版本下支持展示的模型 provider。
-- 读取、写入和删除 Pi `auth.json` 中的 API Key 凭据状态，并保留其它凭据条目。
+- 读取、写入和删除 Pi `auth.json` 中的 API Key 凭据状态，并识别 OAuth 凭据状态和保留其它凭据条目。
 
 不负责：
 
 - 解析或保存 `agent.yaml`。
-- 创建或刷新 OAuth/订阅授权。
+- 创建或刷新 OAuth token；`anthropic` 和 `openai-codex` 登录由 `AppShell` 通过 RuntimeHost 调用 Pi
+  `AuthStorage` 完成，token 刷新仍由 Pi 在运行时负责。
 - 决定具体模型名称或 RuntimeHost 启动参数。
 - 持有 SwiftUI/TCA 状态。
 

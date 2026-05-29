@@ -24,8 +24,8 @@ nonisolated struct ProviderCredentialStatus: Equatable, Identifiable, Sendable {
 
 /// Pi `auth.json` 读写边界。
 ///
-/// 该类型只维护 Pi 标准认证文件中的 provider 凭据摘要和 API Key 条目。OAuth 条目会被保留，
-/// 但第一版不创建或刷新 OAuth token。
+/// 该类型只维护 Pi 标准认证文件中的 provider 凭据摘要和 API Key 条目。OAuth 条目由 Pi RuntimeHost
+/// 登录流程写入，本存储负责识别状态、保留未知字段和删除条目。
 nonisolated struct PiAuthStore {
     /// Pi 认证文件相对 app data 的路径。
     static let authPath = "Pi/auth.json"

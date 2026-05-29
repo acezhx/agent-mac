@@ -57,6 +57,8 @@ macOS UI 和应用级状态编排采用 The Composable Architecture（TCA）。
 - Reducer 负责 UI 状态转移、用户 action 处理和 effect 编排。
 - 文件访问、Agent 读写、资源管理、runtime 通信等能力保留在对应服务模块，通过 TCA
   dependency 注入到 Feature。
+- SwiftUI View 读取 TCA perceptible store 状态时必须遵守 AppShell 的 Perception 追踪规范，
+  避免在逃逸 ViewBuilder 闭包、sheet、列表行或绑定派生处绕过 `WithPerceptionTracking`。
 - `FileStore`、`ResourceLibrary`、`AgentLibrary`、`RuntimeBridge` 等底层模块不因为项目采用
   TCA 就直接依赖 TCA。
 

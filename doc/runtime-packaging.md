@@ -152,8 +152,10 @@ AGENTMAC_PI_AGENT_DIR
 ~/Library/Application Support/AgentMac/Pi/auth.json
 ```
 
-Settings 页面当前会把 API Key 凭据写入 `auth.json`，供 Pi coding agent 读取。该文件不应提交到
-仓库；后续正式凭据管理可迁移到 Keychain 或补充 OAuth/订阅授权流程。
+Settings 页面当前会把 API Key 凭据写入 `auth.json`，也会通过 RuntimeHost 调用 Pi `AuthStorage`
+为 `anthropic` 和 `openai-codex` 执行浏览器 OAuth/订阅授权。Pi OAuth 默认使用本机回调服务，当前
+vendored Pi 版本中 Anthropic 回调端口为 `53692`，OpenAI Codex 回调端口为 `1455`。该文件不应提交到
+仓库；后续正式凭据管理可迁移到 Keychain。
 
 开发或自动化测试可以临时覆盖 Pi SDK 入口：
 

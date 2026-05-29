@@ -253,6 +253,205 @@ struct SettingsFeatureTests {
         ])
     }
 
+    /// 验证 OAuth 登录会写入凭据并把 provider 加入 allowlist。
+    @Test func loginOAuthConnectsProviderAndAllowsProvider() async {
+        let recorder = SettingsRecorder()
+        let store = TestStore(initialState: SettingsFeature.State()) {
+            SettingsFeature()
+        } withDependencies: {
+            $0.appSettingsClient = AppSettingsClient(
+                loadSettings: { .default },
+                saveSettings: { settings in
+                    recorder.savedSettings.append(settings)
+                    return settings
+                }
+            )
+            $0.appProviderAuthClient = AppProviderAuthClient(
+                loadCredentialStatuses: { _ in [] },
+                saveAPIKey: { _, _ in
+                    Issue.record("OAuth connect test should not save API keys.")
+                    return ProviderCredentialStatus(providerID: "unused", hasAPIKey: false, hasOAuth: false)
+                },
+                loginOAuth: { providerID in
+                    recorder.loggedOAuthProviderIDs.append(providerID)
+                    return ProviderCredentialStatus(providerID: providerID, hasAPIKey: false, hasOAuth: true)
+                },
+                removeCredential: { _ in
+                    Issue.record("OAuth connect test should not remove credentials.")
+                    return ProviderCredentialStatus(providerID: "unused", hasAPIKey: false, hasOAuth: false)
+                }
+            )
+        }
+
+        await store.send(.loginOAuthProviderButtonTapped("openai-codex")) {
+            $0.isLoggingInOAuth = true
+            $0.loggingInOAuthProviderID = "openai-codex"
+            $0.errorMessage = nil
+            $0.successMessage = nil
+        }
+        let savedStatus = ProviderCredentialStatus(providerID: "openai-codex", hasAPIKey: false, hasOAuth: true)
+        let savedSettings = AppSettings(agent: AgentAppSettings(allowedModelProviders: ["openai", "openai-codex"]))
+        await store.receive(.loginOAuthSucceeded(savedStatus, savedSettings)) {
+            $0.isLoggingInOAuth = false
+            $0.loggingInOAuthProviderID = nil
+            $0.settings = savedSettings
+            $0.allowedModelProviders = ["openai", "openai-codex"]
+            $0.credentialStatuses = [savedStatus]
+            $0.errorMessage = nil
+            $0.successMessage = "openai-codex connected."
+        }
+
+        #expect(recorder.loggedOAuthProviderIDs == ["openai-codex"])
+        #expect(recorder.savedSettings.map(\.agent.allowedModelProviders) == [["openai", "openai-codex"]])
+    }
+
+    /// 验证 Anthropic 订阅 OAuth 登录会写入凭据并把 provider 加入 allowlist。
+    @Test func loginOAuthConnectsAnthropicProviderAndAllowsProvider() async {
+        let recorder = SettingsRecorder()
+        let store = TestStore(initialState: SettingsFeature.State()) {
+            SettingsFeature()
+        } withDependencies: {
+            $0.appSettingsClient = AppSettingsClient(
+                loadSettings: { .default },
+                saveSettings: { settings in
+                    recorder.savedSettings.append(settings)
+                    return settings
+                }
+            )
+            $0.appProviderAuthClient = AppProviderAuthClient(
+                loadCredentialStatuses: { _ in [] },
+                saveAPIKey: { _, _ in
+                    Issue.record("Anthropic OAuth connect test should not save API keys.")
+                    return ProviderCredentialStatus(providerID: "unused", hasAPIKey: false, hasOAuth: false)
+                },
+                loginOAuth: { providerID in
+                    recorder.loggedOAuthProviderIDs.append(providerID)
+                    return ProviderCredentialStatus(providerID: providerID, hasAPIKey: false, hasOAuth: true)
+                },
+                removeCredential: { _ in
+                    Issue.record("Anthropic OAuth connect test should not remove credentials.")
+                    return ProviderCredentialStatus(providerID: "unused", hasAPIKey: false, hasOAuth: false)
+                }
+            )
+        }
+
+        await store.send(.loginOAuthProviderButtonTapped("anthropic")) {
+            $0.isLoggingInOAuth = true
+            $0.loggingInOAuthProviderID = "anthropic"
+            $0.errorMessage = nil
+            $0.successMessage = nil
+        }
+        let savedStatus = ProviderCredentialStatus(providerID: "anthropic", hasAPIKey: false, hasOAuth: true)
+        let savedSettings = AppSettings(agent: AgentAppSettings(allowedModelProviders: ["openai", "anthropic"]))
+        await store.receive(.loginOAuthSucceeded(savedStatus, savedSettings)) {
+            $0.isLoggingInOAuth = false
+            $0.loggingInOAuthProviderID = nil
+            $0.settings = savedSettings
+            $0.allowedModelProviders = ["openai", "anthropic"]
+            $0.credentialStatuses = [savedStatus]
+            $0.errorMessage = nil
+            $0.successMessage = "anthropic connected."
+        }
+
+        #expect(recorder.loggedOAuthProviderIDs == ["anthropic"])
+        #expect(recorder.savedSettings.map(\.agent.allowedModelProviders) == [["openai", "anthropic"]])
+    }
+
+    /// 验证设置保存失败时不会启动 OAuth 登录。
+    @Test func loginOAuthDoesNotStartLoginWhenSettingsSaveFails() async {
+        let recorder = SettingsRecorder()
+        let store = TestStore(initialState: SettingsFeature.State()) {
+            SettingsFeature()
+        } withDependencies: {
+            $0.appSettingsClient = AppSettingsClient(
+                loadSettings: { .default },
+                saveSettings: { settings in
+                    recorder.savedSettings.append(settings)
+                    throw AppProviderAuthClientError("settings failed")
+                }
+            )
+            $0.appProviderAuthClient = AppProviderAuthClient(
+                loadCredentialStatuses: { _ in [] },
+                saveAPIKey: { _, _ in
+                    Issue.record("OAuth settings failure should not save API keys.")
+                    return ProviderCredentialStatus(providerID: "unused", hasAPIKey: false, hasOAuth: false)
+                },
+                loginOAuth: { providerID in
+                    recorder.loggedOAuthProviderIDs.append(providerID)
+                    return ProviderCredentialStatus(providerID: providerID, hasAPIKey: false, hasOAuth: true)
+                },
+                removeCredential: { _ in
+                    Issue.record("OAuth settings failure should not remove credentials.")
+                    return ProviderCredentialStatus(providerID: "unused", hasAPIKey: false, hasOAuth: false)
+                }
+            )
+        }
+
+        await store.send(.loginOAuthProviderButtonTapped("openai-codex")) {
+            $0.isLoggingInOAuth = true
+            $0.loggingInOAuthProviderID = "openai-codex"
+            $0.errorMessage = nil
+            $0.successMessage = nil
+        }
+        await store.receive(.loginOAuthFailed(AppProviderAuthClientError("settings failed"))) {
+            $0.isLoggingInOAuth = false
+            $0.loggingInOAuthProviderID = nil
+            $0.errorMessage = "settings failed"
+        }
+
+        #expect(recorder.loggedOAuthProviderIDs.isEmpty)
+        #expect(recorder.savedSettings.map(\.agent.allowedModelProviders) == [["openai", "openai-codex"]])
+    }
+
+    /// 验证 OAuth 登录失败时会回滚已保存的 allowlist。
+    @Test func loginOAuthRollsBackSettingsWhenLoginFails() async {
+        let recorder = SettingsRecorder()
+        let store = TestStore(initialState: SettingsFeature.State()) {
+            SettingsFeature()
+        } withDependencies: {
+            $0.appSettingsClient = AppSettingsClient(
+                loadSettings: { .default },
+                saveSettings: { settings in
+                    recorder.savedSettings.append(settings)
+                    return settings
+                }
+            )
+            $0.appProviderAuthClient = AppProviderAuthClient(
+                loadCredentialStatuses: { _ in [] },
+                saveAPIKey: { _, _ in
+                    Issue.record("OAuth rollback should not save API keys.")
+                    return ProviderCredentialStatus(providerID: "unused", hasAPIKey: false, hasOAuth: false)
+                },
+                loginOAuth: { providerID in
+                    recorder.loggedOAuthProviderIDs.append(providerID)
+                    throw AppProviderAuthClientError("oauth failed")
+                },
+                removeCredential: { _ in
+                    Issue.record("OAuth rollback should not remove credentials.")
+                    return ProviderCredentialStatus(providerID: "unused", hasAPIKey: false, hasOAuth: false)
+                }
+            )
+        }
+
+        await store.send(.loginOAuthProviderButtonTapped("openai-codex")) {
+            $0.isLoggingInOAuth = true
+            $0.loggingInOAuthProviderID = "openai-codex"
+            $0.errorMessage = nil
+            $0.successMessage = nil
+        }
+        await store.receive(.loginOAuthFailed(AppProviderAuthClientError("oauth failed"))) {
+            $0.isLoggingInOAuth = false
+            $0.loggingInOAuthProviderID = nil
+            $0.errorMessage = "oauth failed"
+        }
+
+        #expect(recorder.loggedOAuthProviderIDs == ["openai-codex"])
+        #expect(recorder.savedSettings.map(\.agent.allowedModelProviders) == [
+            ["openai", "openai-codex"],
+            ["openai"],
+        ])
+    }
+
     /// 验证断开 provider 会删除凭据并从 allowlist 移除。
     @Test func disconnectProviderRemovesCredentialAndProvider() async {
         let recorder = SettingsRecorder()
@@ -410,6 +609,9 @@ private final class SettingsRecorder: @unchecked Sendable {
 
     /// 保存收到的 API Key。
     var savedAPIKeys: [(providerID: String, apiKey: String)] = []
+
+    /// 收到的 OAuth 登录 provider ID。
+    var loggedOAuthProviderIDs: [String] = []
 
     /// 删除收到的 provider ID。
     var removedProviderIDs: [String] = []

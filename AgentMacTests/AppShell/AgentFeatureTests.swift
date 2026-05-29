@@ -25,6 +25,10 @@ struct AgentFeatureTests {
             ]
         )
         let settings = AppSettings(agent: AgentAppSettings(allowedModelProviders: ["openai", "deepseek"]))
+        let models = [
+            makeModelSummary(providerID: "openai", modelID: "gpt-5-codex"),
+            makeModelSummary(providerID: "deepseek", modelID: "deepseek-v4-flash"),
+        ]
         #expect(resourceOptions.knowledge[0].agentManifestReference == "../../library/knowledge/refund.md")
         #expect(resourceOptions.skills[0].agentManifestReference == "../../library/skills/report-writing")
         #expect(resourceOptions.tools[0].agentManifestReference == "../../library/tools/ticket-search")
@@ -38,12 +42,17 @@ struct AgentFeatureTests {
             )
             $0.appResourceClient = makeResourceClient(options: resourceOptions)
             $0.appSettingsClient = makeSettingsClient(settings: settings)
+            $0.appModelCatalogClient = makeModelCatalogClient { providerIDs in
+                #expect(providerIDs == ["openai", "deepseek"])
+                return models
+            }
         }
 
         await store.send(.task) {
             $0.isLoadingList = true
             $0.isLoadingResources = true
             $0.isLoadingSettings = true
+            $0.isLoadingModelCatalog = true
             $0.errorMessage = nil
         }
         await store.receive(.loadAgentsSucceeded(summaries)) {
@@ -59,6 +68,10 @@ struct AgentFeatureTests {
         await store.receive(.loadSettingsSucceeded(settings)) {
             $0.isLoadingSettings = false
             $0.allowedModelProviders = ["openai", "deepseek"]
+        }
+        await store.receive(.loadModelCatalogSucceeded(models)) {
+            $0.isLoadingModelCatalog = false
+            $0.availableModels = models
         }
     }
 
@@ -433,6 +446,131 @@ struct AgentFeatureTests {
         await store.send(.saveAgentButtonTapped)
     }
 
+    /// 验证切换模型 provider 时会自动选择该 provider 的第一个可用模型。
+    @Test func modelProviderChangeSelectsFirstAvailableModel() async {
+        let agent = makeAgent(id: "support-agent", name: "Support")
+        var state = AgentFeature.State()
+        state.populateEditor(with: agent)
+        state.availableModels = [
+            makeModelSummary(providerID: "openai", modelID: "gpt-5-codex"),
+            makeModelSummary(providerID: "deepseek", modelID: "deepseek-v4-flash"),
+            makeModelSummary(providerID: "deepseek", modelID: "deepseek-reasoner"),
+        ]
+        let store = TestStore(initialState: state) {
+            AgentFeature()
+        }
+
+        await store.send(.editorModelProviderChanged("deepseek")) {
+            $0.editorModelProvider = "deepseek"
+            $0.editorModelName = "deepseek-v4-flash"
+        }
+    }
+
+    /// 验证模型清单已加载时，保存会拒绝当前 provider 下不存在的模型。
+    @Test func saveAgentRequiresAvailableModelWhenCatalogLoaded() async {
+        let agent = makeAgent(
+            id: "support-agent",
+            name: "Support",
+            model: ModelConfig(provider: "openai", name: "unknown-model")
+        )
+        var state = AgentFeature.State()
+        state.populateEditor(with: agent)
+        state.allowedModelProviders = ["openai"]
+        state.availableModels = [
+            makeModelSummary(providerID: "openai", modelID: "gpt-5-codex"),
+        ]
+        #expect(!state.isEditorModelNameAvailable)
+        let store = TestStore(initialState: state) {
+            AgentFeature()
+        } withDependencies: {
+            $0.appAgentClient = makeClient(
+                saveAgent: { _ in
+                    Issue.record("Unavailable model should not be saved.")
+                    return agent
+                }
+            )
+        }
+
+        await store.send(.saveAgentButtonTapped)
+    }
+
+    /// 验证 provider Picker 会保留空占位和当前不在白名单内的 provider tag，避免 SwiftUI selection 警告。
+    @Test func providerPickerOptionsIncludeUnavailableCurrentProvider() {
+        let agent = makeAgent(
+            id: "support-agent",
+            name: "Support",
+            model: ModelConfig(provider: "deepseek", name: "deepseek-v4-flash")
+        )
+        var state = AgentFeature.State()
+        state.populateEditor(with: agent)
+        state.allowedModelProviders = ["openai"]
+
+        #expect(state.editorModelProviderPickerOptions == ["", "deepseek", "openai"])
+    }
+
+    /// 验证 provider Picker 在已有合法 provider 时仍保留空占位 tag，避免切换 Agent 时的临时空 selection 警告。
+    @Test func providerPickerOptionsAlwaysIncludeEmptyPlaceholder() {
+        let agent = makeAgent(
+            id: "support-agent",
+            name: "Support",
+            model: ModelConfig(provider: "openai", name: "gpt-5-codex")
+        )
+        var state = AgentFeature.State()
+        state.populateEditor(with: agent)
+        state.allowedModelProviders = ["openai", "deepseek"]
+
+        #expect(state.editorModelProviderPickerOptions == ["", "openai", "deepseek"])
+    }
+
+    /// 验证模型 Picker 在当前模型为空但已有选项时保留空 tag，避免 SwiftUI selection 警告。
+    @Test func modelPickerOptionsIncludeEmptySelectionPlaceholder() {
+        let agent = makeAgent(
+            id: "support-agent",
+            name: "Support",
+            model: ModelConfig(provider: "openai", name: "")
+        )
+        var state = AgentFeature.State()
+        state.populateEditor(with: agent)
+        state.availableModels = [
+            makeModelSummary(providerID: "openai", modelID: "gpt-5-codex"),
+        ]
+
+        #expect(state.editorModelPickerOptions.map(\.modelID) == ["", "gpt-5-codex"])
+    }
+
+    /// 验证模型 Picker 在当前模型有效时仍保留空 tag，避免切换 Agent 时的临时空 selection 警告。
+    @Test func modelPickerOptionsAlwaysIncludeEmptyPlaceholderWhenModelIsAvailable() {
+        let agent = makeAgent(
+            id: "support-agent",
+            name: "Support",
+            model: ModelConfig(provider: "openai", name: "gpt-5-codex")
+        )
+        var state = AgentFeature.State()
+        state.populateEditor(with: agent)
+        state.availableModels = [
+            makeModelSummary(providerID: "openai", modelID: "gpt-5-codex"),
+            makeModelSummary(providerID: "openai", modelID: "gpt-5"),
+        ]
+
+        #expect(state.editorModelPickerOptions.map(\.modelID) == ["", "gpt-5-codex", "gpt-5"])
+    }
+
+    /// 验证模型 Picker 对 unavailable 模型也保留空 tag，避免切换 Agent 时的临时空 selection 警告。
+    @Test func modelPickerOptionsIncludeEmptyPlaceholderForUnavailableModel() {
+        let agent = makeAgent(
+            id: "support-agent",
+            name: "Support",
+            model: ModelConfig(provider: "openai", name: "legacy-model")
+        )
+        var state = AgentFeature.State()
+        state.populateEditor(with: agent)
+        state.availableModels = [
+            makeModelSummary(providerID: "openai", modelID: "gpt-5-codex"),
+        ]
+
+        #expect(state.editorModelPickerOptions.map(\.modelID) == ["", "legacy-model", "gpt-5-codex"])
+    }
+
     private func makeClient(
         listAgents: @escaping @Sendable () async throws -> [AgentSummary] = {
             throw AppAgentClientError("Unexpected listAgents call.")
@@ -511,6 +649,28 @@ struct AgentFeatureTests {
             saveSettings: { settings in
                 settings
             }
+        )
+    }
+
+    private func makeModelCatalogClient(
+        _ loadModels: @escaping @Sendable (_ providerIDs: [String]) async throws -> [AppModelSummary]
+    ) -> AppModelCatalogClient {
+        AppModelCatalogClient(loadModels: loadModels)
+    }
+
+    private func makeModelSummary(
+        providerID: String,
+        modelID: String,
+        displayName: String? = nil,
+        supportsReasoning: Bool = true,
+        supportedThinkingLevels: [String] = ["off", "minimal", "low", "medium", "high"]
+    ) -> AppModelSummary {
+        AppModelSummary(
+            providerID: providerID,
+            modelID: modelID,
+            displayName: displayName ?? modelID,
+            supportsReasoning: supportsReasoning,
+            supportedThinkingLevels: supportedThinkingLevels
         )
     }
 

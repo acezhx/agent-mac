@@ -16,6 +16,23 @@ const PI_MODULE_RELATIVE_PATH = path.join(
   "index.js",
 );
 const PI_BUILTIN_TOOL_NAMES = Object.freeze(["read", "bash", "edit", "write"]);
+const SUPPORTED_OAUTH_PROVIDER_IDS = Object.freeze(["anthropic", "openai-codex"]);
+const MOCK_MODEL_CATALOG = Object.freeze([
+  {
+    providerID: "openai",
+    id: "gpt-5-codex",
+    name: "GPT-5 Codex",
+    supportsReasoning: true,
+    supportedThinkingLevels: ["off", "minimal", "low", "medium", "high"],
+  },
+  {
+    providerID: "deepseek",
+    id: "deepseek-v4-flash",
+    name: "DeepSeek V4 Flash",
+    supportsReasoning: true,
+    supportedThinkingLevels: ["off", "high", "xhigh"],
+  },
+]);
 const TOOL_DETAIL_PREVIEW_LIMIT = 1000;
 
 /**
@@ -126,6 +143,12 @@ class RuntimeHost {
       case "startSession":
         await this.startSession(command);
         break;
+      case "loginOAuthProvider":
+        await this.loginOAuthProvider(command);
+        break;
+      case "listModelCatalog":
+        await this.listModelCatalog(command);
+        break;
       case "sendMessage":
         await this.sendMessage(command);
         break;
@@ -176,6 +199,27 @@ class RuntimeHost {
       sessionId,
       name: "sessionStarted",
       payload: {},
+    });
+  }
+
+  /**
+   * 列出 Pi 当前内置模型清单的精简元数据。
+   *
+   * @param {{ id: string, payload?: object }} command listModelCatalog command。
+   */
+  async listModelCatalog(command) {
+    const payload = command.payload ?? {};
+    const providerIds = normalizedStringArray(payload.providerIDs);
+    const models = this.runtimeMode === "mock"
+      ? filterModelCatalog(MOCK_MODEL_CATALOG, providerIds)
+      : await this.loadPiModelCatalog(providerIds);
+
+    this.writeEvent({
+      replyTo: command.id,
+      name: "modelCatalogListed",
+      payload: {
+        models,
+      },
     });
   }
 
@@ -313,8 +357,7 @@ class RuntimeHost {
   async createPiSession(sessionId, workspacePath) {
     const piRuntime = await this.loadPiRuntime();
     const cwd = workspacePath ?? process.cwd();
-    const agentDir = process.env.AGENTMAC_PI_AGENT_DIR
-      ?? path.join(os.homedir(), "Library", "Application Support", "AgentMac", "Pi");
+    const agentDir = resolvePiAgentDir();
     await mkdir(agentDir, { recursive: true });
 
     const testFaux = await this.createTestFauxRuntime(piRuntime);
@@ -375,6 +418,148 @@ class RuntimeHost {
   }
 
   /**
+   * 通过 Pi AuthStorage 执行 provider OAuth 登录，并把浏览器授权 URL 转发给 Swift。
+   *
+   * @param {{ id: string, payload?: object }} command loginOAuthProvider command。
+   */
+  async loginOAuthProvider(command) {
+    const payload = command.payload ?? {};
+    const providerId = typeof payload.providerID === "string" ? payload.providerID.trim() : "";
+    if (!SUPPORTED_OAUTH_PROVIDER_IDS.includes(providerId)) {
+      this.writeError(
+        command.id,
+        "invalid_command",
+        `loginOAuthProvider currently supports providerID ${SUPPORTED_OAUTH_PROVIDER_IDS.join(" or ")}.`,
+        true,
+      );
+      return;
+    }
+
+    const piRuntime = await this.loadPiRuntime();
+    await mkdir(resolvePiAgentDir(), { recursive: true });
+    const authStorage = this.createPiAuthStorage(piRuntime);
+    try {
+      await authStorage.login(providerId, {
+        onAuth: (info) => {
+          this.writeEvent({
+            replyTo: command.id,
+            name: "oauthAuthorizationRequested",
+            payload: {
+              providerID: providerId,
+              url: info.url,
+              instructions: info.instructions ?? null,
+            },
+          });
+        },
+        onProgress: (message) => {
+          this.writeEvent({
+            replyTo: command.id,
+            name: "oauthProgressUpdated",
+            payload: {
+              providerID: providerId,
+              message,
+            },
+          });
+        },
+        onPrompt: async () => {
+          throw new Error("Manual OAuth code entry is not supported by AgentMac yet. Retry login and complete the browser callback.");
+        },
+        onDeviceCode: (info) => {
+          this.writeEvent({
+            replyTo: command.id,
+            name: "oauthDeviceCodeRequested",
+            payload: {
+              providerID: providerId,
+              url: info?.verificationUri ?? info?.verification_uri ?? null,
+              userCode: info?.userCode ?? info?.user_code ?? null,
+            },
+          });
+        },
+        onSelect: async () => undefined,
+      });
+    } catch (error) {
+      this.writeError(
+        command.id,
+        "oauth_failed",
+        "OAuth login failed.",
+        true,
+        { reason: formatErrorMessage(error) },
+      );
+      return;
+    }
+
+    this.writeEvent({
+      replyTo: command.id,
+      name: "oauthLoginCompleted",
+      payload: {
+        providerID: providerId,
+      },
+    });
+  }
+
+  /**
+   * 创建 Pi AuthStorage。
+   *
+   * @param {{ module: object }} piRuntime Pi SDK runtime。
+   * @returns {object} Pi AuthStorage。
+   */
+  createPiAuthStorage(piRuntime) {
+    if (
+      !piRuntime
+      || !piRuntime.module
+      || !piRuntime.module.AuthStorage
+      || typeof piRuntime.module.AuthStorage.create !== "function"
+    ) {
+      throw new Error("Pi SDK export missing: AuthStorage.create");
+    }
+
+    const authPath = path.join(resolvePiAgentDir(), "auth.json");
+    return piRuntime.module.AuthStorage.create(authPath);
+  }
+
+  /**
+   * 从 Pi 模型注册表加载模型清单。
+   *
+   * @param {string[]} providerIds 要返回的 provider ID；空数组表示返回所有 provider。
+   * @returns {Promise<object[]>} RuntimeHost 协议使用的模型摘要列表。
+   */
+  async loadPiModelCatalog(providerIds) {
+    const piRuntime = await this.loadPiRuntime();
+    const modelsModule = await this.loadPiModelsModule(piRuntime);
+    const providers = providerIds.length > 0 ? providerIds : modelsModule.getProviders();
+    const models = [];
+    for (const providerId of providers) {
+      for (const model of modelsModule.getModels(providerId)) {
+        models.push({
+          providerID: typeof model.provider === "string" ? model.provider : providerId,
+          id: String(model.id),
+          name: typeof model.name === "string" && model.name.trim().length > 0 ? model.name : String(model.id),
+          supportsReasoning: Boolean(model.reasoning),
+          supportedThinkingLevels: modelsModule.getSupportedThinkingLevels(model),
+        });
+      }
+    }
+    return models;
+  }
+
+  /**
+   * 加载 Pi AI 模型注册表模块。
+   *
+   * @param {{ entryPath: string }} piRuntime Pi SDK runtime。
+   * @returns {Promise<object>} `@earendil-works/pi-ai/dist/models.js` 模块。
+   */
+  async loadPiModelsModule(piRuntime) {
+    const modelsEntryPath = resolvePiAiModelsEntryPath(piRuntime.entryPath);
+    const modelsModule = await import(pathToFileURL(modelsEntryPath).href);
+    for (const exportName of ["getProviders", "getModels", "getSupportedThinkingLevels"]) {
+      if (typeof modelsModule[exportName] !== "function") {
+        throw new Error(`Pi AI model export missing: ${exportName}`);
+      }
+    }
+    return modelsModule;
+  }
+
+  /**
    * 创建内联 Pi extension factory，用于在工具执行前等待 Swift 侧审批。
    *
    * @param {string} sessionId RuntimeHost session id。
@@ -426,7 +611,13 @@ class RuntimeHost {
 
     const entryPath = resolvePiModuleEntryPath(__dirname);
     const module = await import(pathToFileURL(entryPath).href);
-    for (const exportName of ["createAgentSession", "DefaultResourceLoader", "SessionManager", "SettingsManager"]) {
+    for (const exportName of [
+      "AuthStorage",
+      "createAgentSession",
+      "DefaultResourceLoader",
+      "SessionManager",
+      "SettingsManager",
+    ]) {
       if (typeof module[exportName] !== "function") {
         throw new Error(`Pi SDK export missing: ${exportName}`);
       }
@@ -897,6 +1088,84 @@ function resolvePiModuleEntryPath(hostDir) {
     throw new Error(`Pi module entry not found. Checked: ${candidates.join(", ")}`);
   }
   return found;
+}
+
+/**
+ * 定位 Pi AI 模型注册表入口。
+ *
+ * @param {string} piEntryPath Pi coding-agent 入口路径。
+ * @returns {string} Pi AI 模型注册表入口文件绝对路径。
+ */
+function resolvePiAiModelsEntryPath(piEntryPath) {
+  const nodeModulesRoot = path.resolve(
+    piEntryPath,
+    "..",
+    "..",
+    "..",
+    "..",
+  );
+  const candidate = path.join(
+    nodeModulesRoot,
+    "@earendil-works",
+    "pi-ai",
+    "dist",
+    "models.js",
+  );
+  if (!existsSync(candidate)) {
+    throw new Error(`Pi AI models entry not found: ${candidate}`);
+  }
+  return candidate;
+}
+
+/**
+ * 定位 Pi agent 数据目录。
+ *
+ * @returns {string} Pi agent 目录。
+ */
+function resolvePiAgentDir() {
+  return process.env.AGENTMAC_PI_AGENT_DIR
+    ?? path.join(os.homedir(), "Library", "Application Support", "AgentMac", "Pi");
+}
+
+/**
+ * 从未知值中提取字符串数组，去除空值和重复项并保留原始顺序。
+ *
+ * @param {unknown} value 未知输入。
+ * @returns {string[]} 规范化后的字符串数组。
+ */
+function normalizedStringArray(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const seen = new Set();
+  const values = [];
+  for (const item of value) {
+    if (typeof item !== "string") {
+      continue;
+    }
+    const trimmed = item.trim();
+    if (trimmed.length === 0 || seen.has(trimmed)) {
+      continue;
+    }
+    seen.add(trimmed);
+    values.push(trimmed);
+  }
+  return values;
+}
+
+/**
+ * 按 provider ID 过滤模型清单，空 provider ID 列表表示不过滤。
+ *
+ * @param {object[]} models 模型摘要列表。
+ * @param {string[]} providerIds provider ID 列表。
+ * @returns {object[]} 过滤后的模型摘要列表。
+ */
+function filterModelCatalog(models, providerIds) {
+  if (providerIds.length === 0) {
+    return [...models];
+  }
+  const allowedProviders = new Set(providerIds);
+  return models.filter((model) => allowedProviders.has(model.providerID));
 }
 
 /**

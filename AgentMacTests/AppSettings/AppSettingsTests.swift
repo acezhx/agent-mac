@@ -68,6 +68,9 @@ struct AppSettingsTests {
             "xiaomi-token-plan-sgp",
         ])
         #expect(ModelProviderCatalog.provider(id: "openai-codex")?.supportsAPIKey == false)
+        #expect(ModelProviderCatalog.supportsOAuthLogin(id: "anthropic"))
+        #expect(ModelProviderCatalog.supportsOAuthLogin(id: "openai-codex"))
+        #expect(!ModelProviderCatalog.supportsOAuthLogin(id: "deepseek"))
         #expect(ModelProviderCatalog.provider(id: "deepseek")?.apiKeyEnvironmentVariable == "DEEPSEEK_API_KEY")
     }
 

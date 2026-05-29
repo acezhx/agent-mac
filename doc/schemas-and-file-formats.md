@@ -114,7 +114,7 @@ permissions:
 | `id` | string | 是 | 无 | Agent ID，必须与目录名一致。 |
 | `name` | string | 是 | 无 | UI 展示名称。 |
 | `model.provider` | string | 是 | `openai` | 模型提供方。 |
-| `model.name` | string | 是 | 无 | 模型名称。 |
+| `model.name` | string | 是 | 无 | 模型名称；UI 可从 RuntimeHost/Pi 模型清单选择，但仍以字符串持久化。 |
 | `systemPrompt` | string | 是 | `system.md` | Agent 私有 system prompt 文件。 |
 | `knowledge` | string[] | 否 | `[]` | knowledge 文件路径列表。 |
 | `skills` | string[] | 否 | `[]` | skill 目录路径列表。 |
@@ -386,13 +386,16 @@ agent:
 运行时模式可以被 Xcode scheme 或进程环境变量覆盖。优先级见
 `doc/runtime-packaging.md`，不要把开发机专用路径写入 `settings.yaml`。
 
-`agent.allowedModelProviders` 是 app 级 provider 白名单，不保存具体模型名。Agent 自身仍在
-各自的 `agent.yaml` 中保存 `model.provider` 和 `model.name`。
+`agent.allowedModelProviders` 是 app 级 provider 白名单，不保存具体模型名。Agent 编辑页会按该白名单
+从 RuntimeHost/Pi 读取可选模型清单；Agent 自身仍在各自的 `agent.yaml` 中保存 `model.provider`
+和 `model.name`。当前不持久化模型智能级别或 thinking level。
 
 ## Pi/auth.json
 
-`Pi/auth.json` 保存 Pi coding agent 读取的 provider 授权凭据。AgentMac 第一版只通过 Settings
-页面写入 API Key 凭据；OAuth/订阅凭据如果已由 Pi 写入，会被保留但不会由 AgentMac 创建或刷新。
+`Pi/auth.json` 保存 Pi coding agent 读取的 provider 授权凭据。Settings 页面可以写入 API Key
+凭据，也可以通过 RuntimeHost 调用 Pi `AuthStorage.login` 为 `anthropic` 和 `openai-codex` 创建
+OAuth/订阅凭据。
+OAuth token 刷新由 Pi SDK 在运行时负责。
 
 位置：
 
@@ -407,6 +410,26 @@ agent:
   "deepseek": {
     "type": "api_key",
     "key": "sk-..."
+  }
+}
+```
+
+### OAuth 示例
+
+```json
+{
+  "anthropic": {
+    "type": "oauth",
+    "access": "...",
+    "refresh": "...",
+    "expires": 1710000000000
+  },
+  "openai-codex": {
+    "type": "oauth",
+    "access": "...",
+    "refresh": "...",
+    "expires": 1710000000000,
+    "accountId": "acct_..."
   }
 }
 ```
@@ -439,9 +462,20 @@ API Key 凭据字段：
 | `type` | string | 是 | API Key 凭据固定为 `api_key`。 |
 | `key` | string | 是 | Provider API Key。 |
 
-Settings 页面保存 API Key 后，会把对应 provider 写入 `agent.allowedModelProviders`。断开 API Key
-会删除对应 provider 的凭据，并从 `agent.allowedModelProviders` 移除。`openai-codex` 当前只展示在
-OAuth/订阅分组中，第一版不提供 API Key 表单。
+OAuth 凭据字段由 Pi SDK 定义，当前 `anthropic` 和 `openai-codex` 至少包含：
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---:|---|
+| `type` | string | 是 | OAuth 凭据固定为 `oauth`。 |
+| `access` | string | 是 | Pi 运行时使用的 access token。 |
+| `refresh` | string | 是 | Pi 运行时用于刷新 access token 的 refresh token。 |
+| `expires` | number | 是 | access token 过期时间，语义由 Pi SDK 定义。 |
+| `accountId` | string | 否 | OpenAI 账号标识，`openai-codex` 存在时由 Pi SDK 写入。 |
+
+Settings 页面保存 API Key 或完成 OAuth 登录后，会把对应 provider 写入
+`agent.allowedModelProviders`。断开 provider 会删除对应 provider 的凭据，并从
+`agent.allowedModelProviders` 移除。`anthropic` 同时支持 API Key 和 OAuth/订阅授权；`openai-codex`
+只提供 OAuth/订阅连接入口，不提供 API Key 表单。
 
 `auth.json` 当前由 AgentMac 写入为本机文件，并设置为 owner read/write 权限。该文件不能提交到仓库。
 

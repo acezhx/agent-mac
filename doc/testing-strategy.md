@@ -44,8 +44,10 @@
 
 - JSONL 输入输出。
 - `ping`。
+- `listModelCatalog` 模型清单。
 - `startSession`。
 - `sendMessage` mock streaming。
+- `loginOAuthProvider` 调用 Pi `AuthStorage.login` 并转发浏览器授权事件。
 - 错误事件。
 - 固定 Pi coding agent 启动。
 
@@ -63,6 +65,7 @@
 - Swift 接收 event。
 - Runtime Host 异常退出。
 - 流式输出合并。
+- 模型清单 command 往返。
 
 ### 手工 UI 验收
 
@@ -151,6 +154,7 @@ xcodebuild test -scheme AgentMac -destination 'platform=macOS'
 - `AppSettingsStore` 通过 `FileStore` 加载和保存设置。
 - `PiAuthStore` 按 Pi `auth.json` 格式保存 API Key 凭据。
 - `PiAuthStore` 写入和删除单个 provider 凭据时保留其它 provider 的 OAuth 或未知凭据字段。
+- `PiAuthStore` 能把 OAuth 凭据识别为已连接状态，并在删除其它 provider 时保留该条目。
 
 依赖：使用测试临时目录，不使用真实 Application Support。
 
@@ -184,6 +188,7 @@ xcodebuild test -scheme AgentMac -destination 'platform=macOS'
 必须覆盖：
 
 - `ping` 返回 `pong`。
+- `listModelCatalog` 在 mock 模式和 vendored Pi 可用时返回 provider 过滤后的模型清单。
 - 非法 JSON 返回 `invalid_json`。
 - 未知 command 返回 `unsupported_command`。
 - mock `sendMessage` 返回多个 delta 和 completed。
@@ -191,6 +196,8 @@ xcodebuild test -scheme AgentMac -destination 'platform=macOS'
 - 固定 Pi coding agent 启用 Pi 内建 `read`、`bash`、`edit`、`write` 工具，工具调用会在执行前进入
   Runtime Host 审批 hook。
 - Runtime Host 会把 toolcall 和工具执行阶段的非文本进度转成 `runtimeActivity`。
+- Runtime Host 的 `loginOAuthProvider` 只接受当前支持的 `anthropic` 和 `openai-codex`，并把 Pi OAuth
+  授权 URL 转成 `oauthAuthorizationRequested`。
 - vendored Node/Pi 存在时，faux provider 集成测试可以覆盖固定 Pi coding agent 的流式输出。
 
 固定 Pi coding agent 是 Runtime Host 的临时 session mode，用于验证 SwiftUI ->
@@ -204,6 +211,7 @@ Pi 会话。
 
 - 进程启动。
 - `ping` 往返。
+- `listModelCatalog` 往返。
 - `startSession` 和 `sendMessage` 流式输出。
 - `abortSession` 清理。
 - event 解析。
@@ -249,6 +257,8 @@ Pi 会话。
 - 选择 Agent 后加载编辑区字段，并同步已选择的 knowledge、skills、tools。
 - Agent 编辑页加载 ResourceLibrary 中可选的 knowledge、skills、tools。
 - Agent 编辑页加载 Settings 中的模型 provider 白名单，并只允许保存白名单内的 provider。
+- Agent 编辑页加载 RuntimeHost/Pi 模型清单，切换 provider 时选择该 provider 下的模型。
+- 模型清单已加载时，Agent 编辑页不保存当前 provider 下不存在的模型 name。
 - Agent 编辑页勾选或取消勾选资源时更新当前编辑状态。
 - 保存默认 Pi coding agent 时只提交模型配置，并恢复 Pi 自身管理的 system prompt、资源和权限默认值。
 - 创建 Agent 后清空创建表单、选中新 Agent 并更新列表。
@@ -273,6 +283,8 @@ Pi 会话。
 - Resource 创建、保存和删除失败时清理对应进行中标记并展示错误。
 - Settings 页面加载 Agent provider 白名单和 Pi provider 凭据状态。
 - Settings 页面保存 API Key 后写入凭据，并把 provider 加入 Agent provider 白名单。
+- Settings 页面完成 `anthropic` 或 `openai-codex` OAuth 登录后把 provider 加入 Agent provider 白名单，
+  登录失败时回滚。
 - Settings 页面断开 API Key provider 后删除凭据，并从 Agent provider 白名单移除。
 
 当前测试位置：
@@ -304,7 +316,8 @@ macOS build 和手工 UI 验收覆盖；窗口内部的业务状态仍由 `Agent
 2026-05-27 已用真实 Pi 和本地模型配置从 macOS UI 跑通固定 coding agent chat session。
 本地调试可把 Pi 配置放在 `~/Library/Application Support/AgentMac/Pi/settings.json` 和
 `~/Library/Application Support/AgentMac/Pi/auth.json`；Settings 页面当前会把 API Key 凭据写入
-`auth.json`，该文件不应提交到仓库。
+`auth.json`，也会通过 RuntimeHost/Pi `AuthStorage` 为 `anthropic` 和 `openai-codex` 写入 OAuth 凭据。
+该文件不应提交到仓库。
 
 Agent 管理、资源管理和 Approval UI 分别补 reducer 测试；必要的 UI 自动化按风险后续增加。
 当前 Agent 管理 UI、资源管理 UI 和 Approval 确认路径已有 reducer 测试。

@@ -46,6 +46,9 @@ struct AgentFeature {
         /// Agent 允许使用的模型 provider。
         var allowedModelProviders: [String]
 
+        /// Agent 编辑页可选择的模型清单。
+        var availableModels: [AppModelSummary]
+
         /// 创建表单中的 Agent ID。
         var newAgentID: String
 
@@ -85,6 +88,9 @@ struct AgentFeature {
         /// 是否正在加载应用设置。
         var isLoadingSettings: Bool
 
+        /// 是否正在加载模型清单。
+        var isLoadingModelCatalog: Bool
+
         /// 是否正在加载选中 Agent。
         var isLoadingAgent: Bool
 
@@ -103,6 +109,7 @@ struct AgentFeature {
             self.availableSkills = []
             self.availableTools = []
             self.allowedModelProviders = AppSettings.defaultAllowedModelProviders
+            self.availableModels = []
             self.newAgentID = ""
             self.newAgentName = ""
             self.editorName = ""
@@ -116,6 +123,7 @@ struct AgentFeature {
             self.isLoadingList = false
             self.isLoadingResources = false
             self.isLoadingSettings = false
+            self.isLoadingModelCatalog = false
             self.isLoadingAgent = false
             self.isCreatingAgent = false
             self.isSavingAgent = false
@@ -123,7 +131,13 @@ struct AgentFeature {
 
         /// 是否有 Agent 操作正在运行。
         var hasOperationInFlight: Bool {
-            isLoadingList || isLoadingResources || isLoadingSettings || isLoadingAgent || isCreatingAgent || isSavingAgent
+            isLoadingList
+                || isLoadingResources
+                || isLoadingSettings
+                || isLoadingModelCatalog
+                || isLoadingAgent
+                || isCreatingAgent
+                || isSavingAgent
         }
 
         /// 是否可以创建 Agent。
@@ -141,13 +155,76 @@ struct AgentFeature {
                     || !editorName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 && isEditorModelProviderAllowed
                 && !editorModelProvider.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                && !editorModelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && isEditorModelNameAvailable
         }
 
         /// 当前编辑区模型 provider 是否在应用设置允许列表中。
         var isEditorModelProviderAllowed: Bool {
             let provider = editorModelProvider.trimmingCharacters(in: .whitespacesAndNewlines)
             return !provider.isEmpty && allowedModelProviders.contains(provider)
+        }
+
+        /// 当前模型 provider Picker 展示的选项，包含已保存但不在 Settings 白名单中的 provider。
+        var editorModelProviderPickerOptions: [String] {
+            let provider = editorModelProvider.trimmingCharacters(in: .whitespacesAndNewlines)
+            var options = [""]
+            if !provider.isEmpty, !allowedModelProviders.contains(provider) {
+                options.append(provider)
+            }
+            for allowedProvider in allowedModelProviders where !options.contains(allowedProvider) {
+                options.append(allowedProvider)
+            }
+            return options
+        }
+
+        /// 当前编辑区模型名称是否存在于已加载模型清单中。
+        var isEditorModelNameAvailable: Bool {
+            let modelName = editorModelName.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !modelName.isEmpty else {
+                return false
+            }
+
+            let options = editorModelOptions
+            return options.isEmpty || options.contains { $0.modelID == modelName }
+        }
+
+        /// 当前 provider 下可选择的模型。
+        var editorModelOptions: [AppModelSummary] {
+            modelOptions(for: editorModelProvider)
+        }
+
+        /// 当前模型 Picker 展示的选项，包含已保存但已不在清单中的模型。
+        var editorModelPickerOptions: [AppModelSummary] {
+            let options = editorModelOptions
+            let modelName = editorModelName.trimmingCharacters(in: .whitespacesAndNewlines)
+            let placeholder = AppModelSummary(
+                providerID: editorModelProvider,
+                modelID: "",
+                displayName: "Select model",
+                supportsReasoning: false,
+                supportedThinkingLevels: []
+            )
+            guard !modelName.isEmpty else {
+                guard !options.isEmpty else {
+                    return []
+                }
+                return [placeholder] + options
+            }
+
+            guard !options.contains(where: { $0.modelID == modelName }) else {
+                return [placeholder] + options
+            }
+
+            return [
+                placeholder,
+                AppModelSummary(
+                    providerID: editorModelProvider,
+                    modelID: modelName,
+                    displayName: "\(modelName) (unavailable)",
+                    supportsReasoning: false,
+                    supportedThinkingLevels: []
+                ),
+            ] + options
         }
 
         /// 当前编辑对象是否为内置 Pi coding agent。
@@ -181,6 +258,15 @@ struct AgentFeature {
             editorToolReferences = []
         }
 
+        /// 返回指定 provider 下的模型选项。
+        ///
+        /// - Parameter providerID: Pi provider ID。
+        /// - Returns: provider 对应的模型摘要列表。
+        func modelOptions(for providerID: String) -> [AppModelSummary] {
+            let trimmedProviderID = providerID.trimmingCharacters(in: .whitespacesAndNewlines)
+            return availableModels.filter { $0.providerID == trimmedProviderID }
+        }
+
         /// 用 Agent 填充编辑区。
         ///
         /// - Parameter agent: 已加载或已保存的 Agent。
@@ -210,6 +296,17 @@ struct AgentFeature {
         /// - Parameter settings: 应用设置。
         mutating func populateSettings(_ settings: AppSettings) {
             allowedModelProviders = settings.agent.allowedModelProviders
+        }
+
+        /// 用模型清单填充 Agent 编辑页使用的配置项。
+        ///
+        /// - Parameter models: RuntimeHost/Pi 返回的模型摘要。
+        mutating func populateModelCatalog(_ models: [AppModelSummary]) {
+            availableModels = models
+            if editorModelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+               let firstModel = editorModelOptions.first {
+                editorModelName = firstModel.modelID
+            }
         }
 
         /// 生成可保存的 Agent 编辑模型。
@@ -311,6 +408,12 @@ struct AgentFeature {
         /// 应用设置加载失败。
         case loadSettingsFailed(AppSettingsClientError)
 
+        /// 模型清单加载成功。
+        case loadModelCatalogSucceeded([AppModelSummary])
+
+        /// 模型清单加载失败。
+        case loadModelCatalogFailed(AppModelCatalogClientError)
+
         /// 用户选择 Agent。
         case agentSelected(String?)
 
@@ -362,6 +465,7 @@ struct AgentFeature {
 
     private nonisolated enum CancelID: Hashable {
         case pageData
+        case modelCatalog
         case selectedAgent
     }
 
@@ -373,6 +477,7 @@ struct AgentFeature {
                 state.isLoadingList = true
                 state.isLoadingResources = true
                 state.isLoadingSettings = true
+                state.isLoadingModelCatalog = true
                 state.errorMessage = nil
                 return loadPageDataEffect()
 
@@ -404,10 +509,22 @@ struct AgentFeature {
             case let .loadSettingsSucceeded(settings):
                 state.isLoadingSettings = false
                 state.populateSettings(settings)
-                return .none
+                return loadModelCatalogEffect(providerIDs: settings.agent.allowedModelProviders)
 
             case let .loadSettingsFailed(error):
                 state.isLoadingSettings = false
+                state.isLoadingModelCatalog = false
+                state.errorMessage = error.message
+                return .none
+
+            case let .loadModelCatalogSucceeded(models):
+                state.isLoadingModelCatalog = false
+                state.populateModelCatalog(models)
+                return .none
+
+            case let .loadModelCatalogFailed(error):
+                state.isLoadingModelCatalog = false
+                state.availableModels = []
                 state.errorMessage = error.message
                 return .none
 
@@ -481,6 +598,11 @@ struct AgentFeature {
 
             case let .editorModelProviderChanged(provider):
                 state.editorModelProvider = provider
+                if let firstModel = state.editorModelOptions.first {
+                    state.editorModelName = firstModel.modelID
+                } else {
+                    state.editorModelName = ""
+                }
                 return .none
 
             case let .editorModelNameChanged(name):
@@ -557,6 +679,19 @@ struct AgentFeature {
             }
         }
         .cancellable(id: CancelID.pageData, cancelInFlight: true)
+    }
+
+    private func loadModelCatalogEffect(providerIDs: [String]) -> Effect<Action> {
+        @Dependency(AppModelCatalogClient.self) var appModelCatalogClient
+        return .run { send in
+            do {
+                let models = try await appModelCatalogClient.loadModels(providerIDs)
+                await send(.loadModelCatalogSucceeded(models))
+            } catch {
+                await send(.loadModelCatalogFailed(AppModelCatalogClientError(error)))
+            }
+        }
+        .cancellable(id: CancelID.modelCatalog, cancelInFlight: true)
     }
 
     private func loadAgentEffect(id: String) -> Effect<Action> {

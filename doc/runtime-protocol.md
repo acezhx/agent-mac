@@ -141,6 +141,52 @@ Event：
 {"type":"event","id":"evt_001","replyTo":"cmd_001","name":"pong","payload":{}}
 ```
 
+### listModelCatalog
+
+读取 Runtime Host 暴露的 Pi 模型清单，用于 Agent 编辑页按 provider 选择模型。该命令只返回
+RuntimeHost/Pi 当前模型注册表中的精简元数据，不读取用户 `agent.yaml`，也不写入任何设置文件。
+
+Command：
+
+```json
+{
+  "type": "command",
+  "id": "cmd_models_001",
+  "name": "listModelCatalog",
+  "payload": {
+    "providerIDs": ["openai", "deepseek"]
+  }
+}
+```
+
+`providerIDs` 为空数组或缺失时表示返回 Runtime Host 可读取到的全部 provider。
+
+Event：
+
+```json
+{
+  "type": "event",
+  "id": "evt_models_001",
+  "replyTo": "cmd_models_001",
+  "name": "modelCatalogListed",
+  "payload": {
+    "models": [
+      {
+        "providerID": "openai",
+        "id": "gpt-5-codex",
+        "name": "GPT-5 Codex",
+        "supportsReasoning": true,
+        "supportedThinkingLevels": ["off", "minimal", "low", "medium", "high"]
+      }
+    ]
+  }
+}
+```
+
+当前 UI 只使用 `providerID`、`id` 和 `name` 选择并持久化 `model.provider` / `model.name`。
+`supportsReasoning` 和 `supportedThinkingLevels` 先作为后续智能级别设置的元数据保留，不写入
+Agent 配置。
+
 ### startSession
 
 启动一个 session。
@@ -228,6 +274,35 @@ Events：
 {"type":"event","id":"evt_004","replyTo":"cmd_003","sessionId":"ses_001","name":"assistantDelta","payload":{"text":"，我可以帮你。"}}
 {"type":"event","id":"evt_005","replyTo":"cmd_003","sessionId":"ses_001","name":"messageCompleted","payload":{}}
 ```
+
+### loginOAuthProvider
+
+通过 Pi `AuthStorage.login` 启动 provider OAuth/订阅授权。当前 Settings 页面只会发送
+`anthropic` 和 `openai-codex`。
+
+Command：
+
+```json
+{
+  "type": "command",
+  "id": "cmd_oauth_001",
+  "name": "loginOAuthProvider",
+  "payload": {
+    "providerID": "anthropic"
+  }
+}
+```
+
+Events：
+
+```json
+{"type":"event","id":"evt_oauth_001","replyTo":"cmd_oauth_001","name":"oauthAuthorizationRequested","payload":{"providerID":"anthropic","url":"https://...","instructions":"Complete login in your browser."}}
+{"type":"event","id":"evt_oauth_002","replyTo":"cmd_oauth_001","name":"oauthProgressUpdated","payload":{"providerID":"anthropic","message":"Exchanging authorization code for tokens..."}}
+{"type":"event","id":"evt_oauth_003","replyTo":"cmd_oauth_001","name":"oauthLoginCompleted","payload":{"providerID":"anthropic"}}
+```
+
+`oauthAuthorizationRequested.payload.url` 必须由 Swift 用系统浏览器打开。Runtime Host 会等待 Pi
+OAuth callback server 完成并由 Pi 写入 `auth.json`；失败时返回 `oauth_failed` error event。
 
 ### abortSession
 
@@ -341,6 +416,82 @@ Payload：
 }
 ```
 
+### oauthAuthorizationRequested
+
+表示 Runtime Host 已从 Pi OAuth provider 取得浏览器授权 URL。Swift 应打开 `url`，并继续等待同一个
+`replyTo` 的后续 OAuth event。
+
+Payload：
+
+```json
+{
+  "providerID": "anthropic",
+  "url": "https://claude.ai/oauth/authorize?...",
+  "instructions": "Complete login in your browser."
+}
+```
+
+### oauthProgressUpdated
+
+表示 OAuth 登录流程仍在运行。该事件用于 UI 进度和保持 Swift 侧等待，不代表凭据已保存。
+
+Payload：
+
+```json
+{
+  "providerID": "anthropic",
+  "message": "Exchanging authorization code for tokens..."
+}
+```
+
+### oauthDeviceCodeRequested
+
+表示 OAuth provider 请求设备码授权。当前 `anthropic` 和 `openai-codex` 不使用该路径；Swift 第一版可
+忽略或只记录该事件。
+
+Payload：
+
+```json
+{
+  "providerID": "github-copilot",
+  "url": "https://...",
+  "userCode": "ABCD-EFGH"
+}
+```
+
+### oauthLoginCompleted
+
+表示 Pi `AuthStorage.login` 已完成并写入 provider OAuth 凭据。Swift 收到后应重新读取
+`Pi/auth.json` 的 provider 状态。
+
+Payload：
+
+```json
+{
+  "providerID": "anthropic"
+}
+```
+
+### modelCatalogListed
+
+表示 Runtime Host 已返回模型清单。Swift 可用 `providerID` 过滤当前 Settings 白名单内的模型。
+
+Payload：
+
+```json
+{
+  "models": [
+    {
+      "providerID": "deepseek",
+      "id": "deepseek-v4-flash",
+      "name": "DeepSeek V4 Flash",
+      "supportsReasoning": true,
+      "supportedThinkingLevels": ["off", "high", "xhigh"]
+    }
+  ]
+}
+```
+
 ### toolApprovalRequested
 
 表示 runtime 请求工具审批。Swift Session 应根据 Agent 权限策略自动 allow/deny，或通过
@@ -403,6 +554,7 @@ runtime_start_failed
 runtime_failed
 model_failed
 missing_tool_approval
+oauth_failed
 internal_error
 ```
 

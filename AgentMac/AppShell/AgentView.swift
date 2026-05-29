@@ -23,84 +23,88 @@ struct AgentView: View {
     }
 
     private var agentList: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Text("Agents")
-                    .font(.title2.weight(.semibold))
+        WithPerceptionTracking {
+            VStack(spacing: 0) {
+                HStack {
+                    Text("Agents")
+                        .font(.title2.weight(.semibold))
 
-                Spacer()
+                    Spacer()
 
-                Button {
-                    store.send(.refreshButtonTapped)
-                } label: {
-                    Image(systemName: "arrow.clockwise")
+                    Button {
+                        store.send(.refreshButtonTapped)
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(store.hasOperationInFlight)
+                    .help("Refresh")
                 }
-                .buttonStyle(.borderless)
-                .disabled(store.hasOperationInFlight)
-                .help("Refresh")
-            }
-            .padding(16)
+                .padding(16)
 
-            VStack(spacing: 8) {
-                TextField(
-                    "agent-id",
-                    text: $store.newAgentID.sending(\.newAgentIDChanged)
-                )
-                .textFieldStyle(.roundedBorder)
-                .disabled(store.hasOperationInFlight)
+                VStack(spacing: 8) {
+                    TextField(
+                        "agent-id",
+                        text: $store.newAgentID.sending(\.newAgentIDChanged)
+                    )
+                    .textFieldStyle(.roundedBorder)
+                    .disabled(store.hasOperationInFlight)
 
-                TextField(
-                    "Agent name",
-                    text: $store.newAgentName.sending(\.newAgentNameChanged)
-                )
-                .textFieldStyle(.roundedBorder)
-                .disabled(store.hasOperationInFlight)
+                    TextField(
+                        "Agent name",
+                        text: $store.newAgentName.sending(\.newAgentNameChanged)
+                    )
+                    .textFieldStyle(.roundedBorder)
+                    .disabled(store.hasOperationInFlight)
 
-                Button {
-                    store.send(.createAgentButtonTapped)
-                } label: {
-                    Label("Create", systemImage: "plus")
-                        .frame(maxWidth: .infinity)
+                    Button {
+                        store.send(.createAgentButtonTapped)
+                    } label: {
+                        Label("Create", systemImage: "plus")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .disabled(!store.canCreateAgent)
                 }
-                .disabled(!store.canCreateAgent)
-            }
-            .padding(.horizontal, 16)
-            .padding(.bottom, 12)
+                .padding(.horizontal, 16)
+                .padding(.bottom, 12)
 
-            if store.isLoadingList && store.agents.isEmpty {
-                ProgressView()
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                List(selection: $store.selectedAgentID.sending(\.agentSelected)) {
-                    ForEach(store.agents) { agent in
-                        AgentSummaryRow(agent: agent)
-                            .tag(Optional(agent.id))
+                if store.isLoadingList && store.agents.isEmpty {
+                    ProgressView()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    List(selection: $store.selectedAgentID.sending(\.agentSelected)) {
+                        ForEach(store.agents) { agent in
+                            AgentSummaryRow(agent: agent)
+                                .tag(Optional(agent.id))
+                        }
                     }
                 }
             }
+            .frame(minWidth: 260, idealWidth: 300, maxWidth: 340)
         }
-        .frame(minWidth: 260, idealWidth: 300, maxWidth: 340)
     }
 
     private var editor: some View {
-        VStack(spacing: 0) {
-            if let errorMessage = store.errorMessage {
-                Text(errorMessage)
-                    .font(.callout)
-                    .foregroundStyle(.red)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding([.horizontal, .top], 16)
-            }
+        WithPerceptionTracking {
+            VStack(spacing: 0) {
+                if let errorMessage = store.errorMessage {
+                    Text(errorMessage)
+                        .font(.callout)
+                        .foregroundStyle(.red)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding([.horizontal, .top], 16)
+                }
 
-            if store.isLoadingAgent {
-                ProgressView()
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if store.selectedAgent == nil {
-                EmptyAgentSelectionView()
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                AgentEditorView(store: store)
+                if store.isLoadingAgent {
+                    ProgressView()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if store.selectedAgent == nil {
+                    EmptyAgentSelectionView()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    AgentEditorView(store: store)
+                }
             }
         }
     }
@@ -151,6 +155,13 @@ private struct AgentEditorView: View {
     /// 表单内容。
     var body: some View {
         WithPerceptionTracking {
+            let isSavingAgent = store.isSavingAgent
+            let providerOptions = store.editorModelProviderPickerOptions
+            let selectedProvider = store.editorModelProvider
+            let allowedProviders = Set(store.allowedModelProviders)
+            let isLoadingModelCatalog = store.isLoadingModelCatalog
+            let modelPickerOptions = store.editorModelPickerOptions
+
             VStack(spacing: 0) {
                 HStack(alignment: .center, spacing: 12) {
                     VStack(alignment: .leading, spacing: 4) {
@@ -171,7 +182,7 @@ private struct AgentEditorView: View {
                     Button {
                         store.send(.saveAgentButtonTapped)
                     } label: {
-                        Label(store.isSavingAgent ? "Saving" : "Save", systemImage: "square.and.arrow.down")
+                        Label(isSavingAgent ? "Saving" : "Save", systemImage: "square.and.arrow.down")
                     }
                     .disabled(!store.canSaveAgent)
                 }
@@ -199,23 +210,49 @@ private struct AgentEditorView: View {
                                     "Provider",
                                     selection: $store.editorModelProvider.sending(\.editorModelProviderChanged)
                                 ) {
-                                    ForEach(store.allowedModelProviders, id: \.self) { provider in
-                                        Text(provider).tag(provider)
+                                    ForEach(providerOptions, id: \.self) { provider in
+                                        Text(providerLabel(
+                                            provider,
+                                            selectedProvider: selectedProvider,
+                                            allowedProviders: allowedProviders
+                                        ))
+                                        .tag(provider)
                                     }
                                 }
                                 .labelsHidden()
                             }
 
-                            LabeledContent("Name") {
-                                TextField(
-                                    "gpt-5-codex",
-                                    text: $store.editorModelName.sending(\.editorModelNameChanged)
-                                )
-                                .textFieldStyle(.roundedBorder)
+                            LabeledContent("Model") {
+                                if isLoadingModelCatalog && modelPickerOptions.isEmpty {
+                                    ProgressView()
+                                        .controlSize(.small)
+                                } else if modelPickerOptions.isEmpty {
+                                    TextField(
+                                        "gpt-5-codex",
+                                        text: $store.editorModelName.sending(\.editorModelNameChanged)
+                                    )
+                                    .textFieldStyle(.roundedBorder)
+                                } else {
+                                    Picker(
+                                        "Model",
+                                        selection: $store.editorModelName.sending(\.editorModelNameChanged)
+                                    ) {
+                                        ForEach(modelPickerOptions, id: \.modelID) { model in
+                                            Text(model.displayName).tag(model.modelID)
+                                        }
+                                    }
+                                    .labelsHidden()
+                                }
                             }
 
                             if !store.isEditorModelProviderAllowed {
                                 Text("Provider is not allowed in Settings.")
+                                    .font(.caption)
+                                    .foregroundStyle(.red)
+                            }
+
+                            if !store.isEditorModelNameAvailable {
+                                Text("Model is not available for selected provider.")
                                     .font(.caption)
                                     .foregroundStyle(.red)
                             }
@@ -285,6 +322,20 @@ private struct AgentEditorView: View {
             }
         }
     }
+
+    private func providerLabel(
+        _ provider: String,
+        selectedProvider: String,
+        allowedProviders: Set<String>
+    ) -> String {
+        if provider.isEmpty {
+            return "Select provider"
+        }
+        if provider == selectedProvider && !allowedProviders.contains(provider) {
+            return "\(provider) (unavailable)"
+        }
+        return provider
+    }
 }
 
 /// Agent 编辑页里的单类资源选择控件。
@@ -329,25 +380,27 @@ private struct ResourceSelectionList: View {
                 } else {
                     VStack(alignment: .leading, spacing: 6) {
                         ForEach(resources) { resource in
-                            let reference = resource.agentManifestReference
-                            Toggle(
-                                isOn: Binding(
-                                    get: {
-                                        selectedReferences.contains(reference)
-                                    },
-                                    set: { isSelected in
-                                        store.send(.resourceSelectionChanged(
-                                            kind: kind,
-                                            reference: reference,
-                                            isSelected: isSelected
-                                        ))
-                                    }
-                                )
-                            ) {
-                                ResourceSelectionRow(resource: resource, reference: reference)
+                            WithPerceptionTracking {
+                                let reference = resource.agentManifestReference
+                                Toggle(
+                                    isOn: Binding(
+                                        get: {
+                                            selectedReferences.contains(reference)
+                                        },
+                                        set: { isSelected in
+                                            store.send(.resourceSelectionChanged(
+                                                kind: kind,
+                                                reference: reference,
+                                                isSelected: isSelected
+                                            ))
+                                        }
+                                    )
+                                ) {
+                                    ResourceSelectionRow(resource: resource, reference: reference)
+                                }
+                                .toggleStyle(.checkbox)
+                                .disabled(store.hasOperationInFlight)
                             }
-                            .toggleStyle(.checkbox)
-                            .disabled(store.hasOperationInFlight)
                         }
                     }
                 }

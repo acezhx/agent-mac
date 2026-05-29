@@ -141,11 +141,8 @@ nonisolated enum ModelProviderCatalog {
         ),
     ]
 
-    /// 支持 API Key 授权的 provider。
-    static let apiKeyProviders = providers.filter(\.supportsAPIKey)
-
-    /// 支持 OAuth 或订阅授权的 provider。
-    static let oauthProviders = providers.filter(\.supportsOAuth)
+    /// 当前已接入浏览器 OAuth 登录流程的 provider ID。
+    static let oauthLoginProviderIDs: Set<String> = ["anthropic", "openai-codex"]
 
     /// 按 ID 查找 provider。
     ///
@@ -153,5 +150,13 @@ nonisolated enum ModelProviderCatalog {
     /// - Returns: provider 定义；未知 ID 返回 `nil`。
     static func provider(id: String) -> ModelProviderDefinition? {
         providers.first { $0.id == id }
+    }
+
+    /// 查询 provider 是否支持从 Settings 页面发起 OAuth 登录。
+    ///
+    /// - Parameter id: Pi provider ID。
+    /// - Returns: 当前 UI 是否允许直接启动该 provider 的 OAuth 登录流程。
+    static func supportsOAuthLogin(id: String) -> Bool {
+        oauthLoginProviderIDs.contains(id)
     }
 }

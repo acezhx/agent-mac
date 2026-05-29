@@ -104,6 +104,28 @@ struct RuntimeBridgeTests {
         #expect(aborted.name == "sessionAborted")
     }
 
+    /// 验证 RuntimeBridge 可以读取 Runtime Host 模型清单事件。
+    @Test func modelCatalogRoundTripsThroughRuntimeHost() throws {
+        let (bridge, root) = try makeBridge()
+        defer {
+            bridge.stop()
+            removeTemporaryRoot(root)
+        }
+
+        try bridge.start()
+        let event = try bridge.listModelCatalog(providerIDs: ["deepseek"])
+
+        #expect(event.name == "modelCatalogListed")
+        guard case let .array(models)? = event.payload?["models"],
+              case let .object(model)? = models.first
+        else {
+            Issue.record("Expected model catalog payload.")
+            return
+        }
+        #expect(model["providerID"]?.stringValue == "deepseek")
+        #expect(model["id"]?.stringValue == "deepseek-v4-flash")
+    }
+
     /// 验证 RuntimeBridge 能把工具审批决策回传 Runtime Host，并让当前消息完成。
     @Test func approveToolCallRoundTripsThroughRuntimeHost() throws {
         let (bridge, root) = try makeBridge(environment: ["AGENTMAC_RUNTIMEHOST_MOCK_TOOL_APPROVAL": "1"])

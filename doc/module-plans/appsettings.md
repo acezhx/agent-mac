@@ -3,7 +3,7 @@
 ## 模块目标
 
 `AppSettings` 负责 app 级 `settings.yaml` 的模型、轻量 YAML 编解码和读写边界，也维护 Settings
-页面使用的 Pi provider 目录和 `Pi/auth.json` API Key 写入边界。它让上层功能可以读取和保存跨
+页面使用的 Pi provider 目录和 `Pi/auth.json` API Key 写入及 OAuth 状态识别边界。它让上层功能可以读取和保存跨
 Agent 共享的应用设置，同时保持 SwiftUI/TCA 和底层文件服务解耦。
 
 ## 依赖关系
@@ -40,9 +40,9 @@ AppSettings
 ### Provider 授权
 
 - 定义 AgentMac 支持展示的 Pi provider 目录。
-- 区分 API Key 授权和 OAuth/订阅授权。
+- 在 provider 定义中标注 API Key 与 OAuth/订阅授权能力。
 - 读取 `Pi/auth.json` 中指定 provider 的凭据状态。
-- 写入或删除 API Key 凭据，并保留其它 provider 的未知凭据字段。
+- 写入或删除 API Key 凭据，识别 OAuth 凭据，并保留其它 provider 的未知凭据字段。
 
 ## 当前字段
 
@@ -55,11 +55,13 @@ AppSettings
 每个 Agent 的 `agent.yaml` 中。
 
 `Pi/auth.json` 是 Pi coding agent 自身读取的授权文件。Settings 页面保存 API Key 后会写入
-`{"type":"api_key","key":"..."}` 条目，并同步更新 `agent.allowedModelProviders`。
+`{"type":"api_key","key":"..."}` 条目，并同步更新 `agent.allowedModelProviders`。`anthropic` 和
+`openai-codex` OAuth 凭据由 AppShell 通过 RuntimeHost 调用 Pi `AuthStorage.login` 写入，AppSettings
+只负责读取状态和删除条目。
 
 ## 非目标
 
-- 不实现 OAuth/订阅授权创建和刷新。
+- 不直接实现 OAuth/订阅授权创建和刷新；创建流程属于 AppShell/RuntimeHost，token 刷新属于 Pi SDK。
 - 不把模型 API key 写入 `settings.yaml`。
 - 不保存 Agent 自身定义。
 - 不解析或生成 `agent.yaml`。
@@ -81,4 +83,5 @@ AppSettings
 - 旧版最小 `settings.yaml` 会补齐默认 Agent provider 白名单。
 - 保存设置后可以重新读回相同的 provider 白名单。
 - API Key 凭据可以按 Pi `auth.json` 格式保存、读取状态和删除，并保留其它 provider 凭据。
+- OAuth 凭据可以被识别为已连接状态，并可按 provider 删除。
 - `AppShell` 通过 TCA dependency 访问设置，不直接读写 `FileStore`。
