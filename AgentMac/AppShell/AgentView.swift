@@ -181,13 +181,15 @@ private struct AgentEditorView: View {
 
                 ScrollView {
                     VStack(alignment: .leading, spacing: 16) {
-                        formSection(title: "Profile") {
-                            LabeledContent("Name") {
-                                TextField(
-                                    "Agent name",
-                                    text: $store.editorName.sending(\.editorNameChanged)
-                                )
-                                .textFieldStyle(.roundedBorder)
+                        if !store.isEditingDefaultCodingAgent {
+                            formSection(title: "Profile") {
+                                LabeledContent("Name") {
+                                    TextField(
+                                        "Agent name",
+                                        text: $store.editorName.sending(\.editorNameChanged)
+                                    )
+                                    .textFieldStyle(.roundedBorder)
+                                }
                             }
                         }
 
@@ -209,17 +211,48 @@ private struct AgentEditorView: View {
                             }
                         }
 
-                        formSection(title: "System Prompt") {
-                            TextEditor(text: $store.editorSystemPrompt.sending(\.editorSystemPromptChanged))
-                                .font(.body)
-                                .frame(minHeight: 260)
-                                .scrollContentBackground(.hidden)
-                                .background(Color(nsColor: .textBackgroundColor))
-                                .clipShape(RoundedRectangle(cornerRadius: 6))
-                                .overlay {
-                                    RoundedRectangle(cornerRadius: 6)
-                                        .stroke(Color(nsColor: .separatorColor))
-                                }
+                        if !store.isEditingDefaultCodingAgent {
+                            formSection(title: "Resources") {
+                                ResourceSelectionList(
+                                    title: "Knowledge",
+                                    emptyTitle: "No knowledge resources",
+                                    kind: .knowledge,
+                                    resources: store.availableKnowledge,
+                                    selectedReferences: store.editorKnowledgeReferences,
+                                    store: store
+                                )
+
+                                ResourceSelectionList(
+                                    title: "Skills",
+                                    emptyTitle: "No skills",
+                                    kind: .skill,
+                                    resources: store.availableSkills,
+                                    selectedReferences: store.editorSkillReferences,
+                                    store: store
+                                )
+
+                                ResourceSelectionList(
+                                    title: "Tools",
+                                    emptyTitle: "No tools",
+                                    kind: .tool,
+                                    resources: store.availableTools,
+                                    selectedReferences: store.editorToolReferences,
+                                    store: store
+                                )
+                            }
+
+                            formSection(title: "System Prompt") {
+                                TextEditor(text: $store.editorSystemPrompt.sending(\.editorSystemPromptChanged))
+                                    .font(.body)
+                                    .frame(minHeight: 260)
+                                    .scrollContentBackground(.hidden)
+                                    .background(Color(nsColor: .textBackgroundColor))
+                                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                                    .overlay {
+                                        RoundedRectangle(cornerRadius: 6)
+                                            .stroke(Color(nsColor: .separatorColor))
+                                    }
+                            }
                         }
                     }
                     .padding(16)
@@ -239,6 +272,113 @@ private struct AgentEditorView: View {
 
             VStack(alignment: .leading, spacing: 10) {
                 content()
+            }
+        }
+    }
+}
+
+/// Agent 编辑页里的单类资源选择控件。
+private struct ResourceSelectionList: View {
+    /// 分组标题。
+    let title: String
+
+    /// 空列表提示。
+    let emptyTitle: String
+
+    /// 资源类型。
+    let kind: AppResourceKind
+
+    /// 当前资源库中可选择的资源。
+    let resources: [AppResourceSummary]
+
+    /// 当前 Agent 已选择的该类型资源引用。
+    let selectedReferences: [String]
+
+    /// Agent 管理页面 store。
+    @Perception.Bindable var store: StoreOf<AgentFeature>
+
+    /// 控件内容。
+    var body: some View {
+        WithPerceptionTracking {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 6) {
+                    Text(title)
+                        .font(.subheadline.weight(.semibold))
+
+                    Text("\(selectedReferences.count)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                if resources.isEmpty {
+                    Text(emptyTitle)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, 6)
+                } else {
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(resources) { resource in
+                            let reference = resource.agentManifestReference
+                            Toggle(
+                                isOn: Binding(
+                                    get: {
+                                        selectedReferences.contains(reference)
+                                    },
+                                    set: { isSelected in
+                                        store.send(.resourceSelectionChanged(
+                                            kind: kind,
+                                            reference: reference,
+                                            isSelected: isSelected
+                                        ))
+                                    }
+                                )
+                            ) {
+                                ResourceSelectionRow(resource: resource, reference: reference)
+                            }
+                            .toggleStyle(.checkbox)
+                            .disabled(store.hasOperationInFlight)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Agent 资源选择行。
+private struct ResourceSelectionRow: View {
+    /// Resource 摘要。
+    let resource: AppResourceSummary
+
+    /// 写入 Agent manifest 的资源引用。
+    let reference: String
+
+    /// 行内容。
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: resource.kind.systemImage)
+                .foregroundStyle(resource.isValid ? Color.secondary : Color.red)
+                .frame(width: 18)
+
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(resource.name)
+                        .font(.body)
+                        .lineLimit(1)
+
+                    if !resource.isValid {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
+                }
+
+                Text(reference)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .textSelection(.enabled)
             }
         }
     }

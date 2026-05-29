@@ -131,7 +131,8 @@ ask
 deny
 ```
 
-第一版 `Approval` 接入后，`allow` 自动批准、`deny` 自动拒绝、`ask` 通过 AppShell UI 等待用户确认。
+第一版 `Approval` 接入后，`allow` 自动批准、`deny` 自动拒绝；`ask` 默认允许 Pi 内建
+`read`、`edit`、`write` 文件类请求和不匹配常见文件删除语义的 `bash` shell 请求，其余请求通过 AppShell UI 等待用户确认。
 
 ### 校验规则
 

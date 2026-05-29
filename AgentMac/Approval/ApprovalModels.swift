@@ -217,9 +217,76 @@ nonisolated struct ApprovalService: Sendable {
         case .allow:
             return .resolved(.allowed(reason: "Allowed by agent permission policy."))
         case .ask:
+            if let defaultDecision = defaultDecision(for: request) {
+                return .resolved(defaultDecision)
+            }
             return .requiresUserDecision
         case .deny:
             return .resolved(.denied(reason: "Denied by agent permission policy."))
+        }
+    }
+
+    /// 返回当前默认允许策略下的自动决策。
+    ///
+    /// 该策略只在 Agent 权限为 `ask` 时生效；显式 `allow` 和 `deny` 仍优先使用 Agent 权限配置。
+    /// Pi 内建 read/edit/write 默认允许；bash 只有在命令不包含文件删除语义时默认允许。
+    ///
+    /// - Parameter request: Runtime Host 上报的工具审批请求。
+    /// - Returns: 可自动允许时返回决策，否则返回 nil 继续进入交互审批。
+    private func defaultDecision(for request: ToolApprovalRequest) -> ToolApprovalDecision? {
+        switch request.toolName.lowercased() {
+        case "read", "edit", "write":
+            guard request.risk == .edit || request.risk == .write else {
+                return nil
+            }
+            return .allowed(reason: "Allowed by default built-in tool policy.")
+        case "bash":
+            guard request.risk == .shell else {
+                return nil
+            }
+            guard let command = detailValue(named: "command", in: request),
+                  !command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  !bashCommandDeletesFiles(command)
+            else {
+                return nil
+            }
+            return .allowed(reason: "Allowed by default bash policy.")
+        default:
+            return nil
+        }
+    }
+
+    /// 读取审批详情中的指定字段。
+    ///
+    /// - Parameters:
+    ///   - name: 字段名。
+    ///   - request: 工具审批请求。
+    /// - Returns: 匹配字段值。
+    private func detailValue(named name: String, in request: ToolApprovalRequest) -> String? {
+        request.details.first { $0.key == name }?.value
+    }
+
+    /// 判断 bash 命令是否包含文件删除语义。
+    ///
+    /// 该判断用于决定默认 `ask` 策略下是否可以自动允许 bash。匹配保持保守：命中常见删除命令时继续
+    /// 交给用户审批，未命中时默认允许执行。
+    ///
+    /// - Parameter command: bash command。
+    /// - Returns: 可能删除文件时返回 true。
+    private func bashCommandDeletesFiles(_ command: String) -> Bool {
+        let patterns = [
+            #"(^|[\s;&|()])(?:/usr/bin/|/bin/)?rm([\s;&|()]|$)"#,
+            #"(^|[\s;&|()])(?:/usr/bin/|/bin/)?rmdir([\s;&|()]|$)"#,
+            #"(^|[\s;&|()])(?:/usr/bin/|/bin/)?unlink([\s;&|()]|$)"#,
+            #"(^|[\s;&|()])(?:/usr/bin/|/bin/)?trash([\s;&|()]|$)"#,
+            #"(^|[\s;&|()])git\s+rm([\s;&|()]|$)"#,
+            #"(^|[\s;&|()])git\s+clean([\s;&|()]|$)"#,
+            #"(^|[\s;&|()])find\s+.*\s-delete([\s;&|()]|$)"#,
+            #"(^|[\s;&|()])find\s+.*\s-exec\s+(?:/usr/bin/|/bin/)?rm([\s;&|()]|$)"#,
+            #"(^|[\s;&|()])xargs\s+(?:/usr/bin/|/bin/)?rm([\s;&|()]|$)"#,
+        ]
+        return patterns.contains { pattern in
+            command.range(of: pattern, options: [.caseInsensitive, .regularExpression]) != nil
         }
     }
 

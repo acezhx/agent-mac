@@ -116,6 +116,29 @@ struct SessionTests {
         #expect(logMessages[0].contains(session.id.uuidString.lowercased()))
     }
 
+    /// 验证 RuntimeHost 活动心跳是已知事件，不会创建消息或写入未知事件日志。
+    @Test func sendUserMessageIgnoresRuntimeActivityWithoutLogging() throws {
+        var logMessages: [String] = []
+        let runtime = MockSessionRuntime()
+        runtime.sendEvents = [
+            runtimeEvent(name: "runtimeActivity", payload: .object(["piEventType": .string("tool_execution_start")])),
+            runtimeEvent(name: "assistantDelta", payload: .object(["text": .string("done")])),
+            runtimeEvent(name: "messageCompleted"),
+        ]
+        let (session, _, root, _) = try makeSession(runtime: runtime) { message in
+            logMessages.append(message)
+        }
+        defer { removeTemporaryRoot(root) }
+
+        try session.start()
+        try session.sendUserMessage("ping")
+
+        #expect(session.state == .idle)
+        #expect(session.messages.map(\.role) == [.user, .assistant])
+        #expect(session.messages[1].content == "done")
+        #expect(logMessages.isEmpty)
+    }
+
     /// 验证上一轮消息未完成时不会接受新的用户消息。
     @Test func sendUserMessageRejectsMessageAlreadyInFlight() throws {
         let runtime = MockSessionRuntime()
@@ -390,7 +413,45 @@ struct SessionTests {
         #expect(session.messages.last?.content == "done")
     }
 
-    /// 验证交互式工具审批会暂停消息流程，直到 UI 处理器提交 allow 决策。
+    /// 验证默认策略会自动批准非删除文件的 bash 请求，不进入交互式审批。
+    @Test func safeBashToolApprovalIsAllowedByDefault() throws {
+        let runtime = MockSessionRuntime()
+        runtime.sendEvents = [
+            runtimeEvent(
+                name: "toolApprovalRequested",
+                payload: .object([
+                    "toolCallId": .string("tool_001"),
+                    "toolName": .string("bash"),
+                    "risk": .string("shell"),
+                    "summary": .string("Run shell command"),
+                    "details": .object([
+                        "command": .string("find . -name '*.md'"),
+                    ]),
+                ])
+            ),
+            runtimeEvent(name: "assistantDelta", payload: .object(["text": .string("done")])),
+            runtimeEvent(name: "messageCompleted"),
+        ]
+        let (session, _, root, _) = try makeSession(runtime: runtime)
+        defer { removeTemporaryRoot(root) }
+
+        try session.start()
+        try session.sendUserMessage("需要工具")
+
+        #expect(session.pendingToolApprovalRequest == nil)
+        #expect(session.toolApprovalDecisions == [
+            .allowed(reason: "Allowed by default bash policy."),
+        ])
+        #expect(runtime.approvedToolCalls == [
+            .init(
+                sessionID: "ses_mock",
+                toolCallID: "tool_001",
+                decision: .allowed(reason: "Allowed by default bash policy.")
+            ),
+        ])
+    }
+
+    /// 验证删除文件的 bash 工具审批会暂停消息流程，直到 UI 处理器提交 allow 决策。
     @Test func toolApprovalRequestWaitsForInteractiveDecision() async throws {
         let approvalHandler = InteractiveToolApprovalHandler()
         let runtime = MockSessionRuntime()
@@ -403,7 +464,7 @@ struct SessionTests {
                     "risk": .string("shell"),
                     "summary": .string("Run shell command"),
                     "details": .object([
-                        "command": .string("ls -la"),
+                        "command": .string("rm -rf build"),
                     ]),
                 ])
             ),
@@ -425,7 +486,7 @@ struct SessionTests {
             #expect(pendingRequest.toolCallID == "tool_001")
             #expect(pendingRequest.toolName == "bash")
             #expect(pendingRequest.details == [
-                .init(key: "command", value: "ls -la"),
+                .init(key: "command", value: "rm -rf build"),
             ])
             #expect(runtime.approvedToolCalls.isEmpty)
 

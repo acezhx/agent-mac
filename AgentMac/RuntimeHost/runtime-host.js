@@ -15,6 +15,8 @@ const PI_MODULE_RELATIVE_PATH = path.join(
   "dist",
   "index.js",
 );
+const PI_BUILTIN_TOOL_NAMES = Object.freeze(["read", "bash", "edit", "write"]);
+const TOOL_DETAIL_PREVIEW_LIMIT = 1000;
 
 /**
  * RuntimeHost 的 JSONL 协议入口。
@@ -219,8 +221,6 @@ class RuntimeHost {
     session.activeReplyTo = command.id;
     session.completed = false;
     session.seenTextDelta = false;
-    session.toolApprovalRequested = false;
-
     try {
       await session.piSession.sendUserMessage(message.content);
       if (!session.completed) {
@@ -304,7 +304,7 @@ class RuntimeHost {
   }
 
   /**
-   * 创建 Pi SDK session，并禁止内建工具，避免进入审批流程。
+   * 创建 Pi SDK session，并启用 AgentMac 支持审批的 Pi 内建工具。
    *
    * @param {string} sessionId RuntimeHost session id。
    * @param {string|null} workspacePath 工作目录。
@@ -323,6 +323,7 @@ class RuntimeHost {
       cwd,
       agentDir,
       settingsManager,
+      extensionFactories: [this.createToolApprovalExtensionFactory(sessionId)],
       noExtensions: true,
       noSkills: true,
       noPromptTemplates: true,
@@ -334,7 +335,7 @@ class RuntimeHost {
     const createOptions = {
       cwd,
       agentDir,
-      noTools: "all",
+      tools: PI_BUILTIN_TOOL_NAMES,
       settingsManager,
       resourceLoader,
       sessionManager: piRuntime.module.SessionManager.inMemory(cwd),
@@ -365,13 +366,52 @@ class RuntimeHost {
       activeReplyTo: null,
       completed: false,
       seenTextDelta: false,
-      toolApprovalRequested: false,
       pendingToolApprovals: new Map(),
     };
     session.unsubscribe = result.session.subscribe((event) => {
       this.handlePiEvent(session, event);
     });
     return session;
+  }
+
+  /**
+   * 创建内联 Pi extension factory，用于在工具执行前等待 Swift 侧审批。
+   *
+   * @param {string} sessionId RuntimeHost session id。
+   * @returns {Function} Pi extension factory。
+   */
+  createToolApprovalExtensionFactory(sessionId) {
+    return (pi) => {
+      pi.on("tool_call", async (event) => this.handlePiToolCallApproval(sessionId, event));
+    };
+  }
+
+  /**
+   * 处理 Pi tool_call hook，并将拒绝决策转成 Pi 可理解的 block 结果。
+   *
+   * @param {string} sessionId RuntimeHost session id。
+   * @param {object} event Pi tool_call event。
+   * @returns {Promise<object|undefined>} Pi tool_call handler 结果。
+   */
+  async handlePiToolCallApproval(sessionId, event) {
+    const session = this.sessions.get(sessionId);
+    if (!session || !session.activeReplyTo) {
+      return {
+        block: true,
+        reason: "Runtime session is not ready for tool approval.",
+      };
+    }
+
+    const request = this.toolApprovalRequestFromEvent(event);
+    const decision = await this.waitForToolApproval(session, session.activeReplyTo, request);
+    if (decision.decision === "approved") {
+      return undefined;
+    }
+
+    return {
+      block: true,
+      reason: decision.reason || "Tool execution denied.",
+    };
   }
 
   /**
@@ -441,15 +481,12 @@ class RuntimeHost {
       return;
     }
 
-    if (isPiToolEvent(event)) {
-      void this.requestToolApproval(session, event);
-      return;
-    }
-
     if (event.type === "message_update") {
       this.forwardPiMessageUpdate(session, event);
     } else if (event.type === "message_end") {
       this.forwardPiMessageEnd(session, event);
+    } else if (String(event.type).startsWith("tool_execution_")) {
+      this.forwardPiActivity(session, event);
     }
   }
 
@@ -475,8 +512,28 @@ class RuntimeHost {
         payload: { text: assistantEvent.delta },
       });
     } else if (String(assistantEvent.type).startsWith("toolcall_")) {
-      void this.requestToolApproval(session, event);
+      this.forwardPiActivity(session, event);
     }
+  }
+
+  /**
+   * 转发 Pi 非文本进度事件，避免 Swift 侧在工具调用或工具执行期间误判 RuntimeHost 空闲超时。
+   *
+   * @param {object} session RuntimeHost 内部 session 状态。
+   * @param {object} event Pi event。
+   */
+  forwardPiActivity(session, event) {
+    const replyTo = session.activeReplyTo;
+    if (!replyTo) {
+      return;
+    }
+
+    this.writeEvent({
+      replyTo,
+      sessionId: session.id,
+      name: "runtimeActivity",
+      payload: piActivityPayload(event),
+    });
   }
 
   /**
@@ -515,47 +572,22 @@ class RuntimeHost {
   }
 
   /**
-   * 请求 Swift 侧审批工具调用。
+   * 从 Pi tool_call event 生成 RuntimeHost 稳定审批请求。
    *
-   * @param {object} session RuntimeHost 内部 session 状态。
-   * @param {object} event Pi tool event。
-   * @returns {Promise<object|null>} 审批决策；无法请求时返回 null。
-   */
-  async requestToolApproval(session, event) {
-    if (session.toolApprovalRequested || !session.activeReplyTo) {
-      return null;
-    }
-
-    session.toolApprovalRequested = true;
-    const request = this.toolApprovalRequestFromEvent(event);
-    const decision = await this.waitForToolApproval(session, session.activeReplyTo, request);
-    if (!session.completed && session.activeReplyTo) {
-      this.writeEvent({
-        replyTo: session.activeReplyTo,
-        sessionId: session.id,
-        name: "messageCompleted",
-        payload: {},
-      });
-      session.completed = true;
-    }
-    return decision;
-  }
-
-  /**
-   * 从 Pi tool event 生成 RuntimeHost 稳定审批请求。
-   *
-   * @param {object} event Pi tool event。
+   * @param {object} event Pi tool_call event。
    * @returns {object} toolApprovalRequested payload。
    */
   toolApprovalRequestFromEvent(event) {
+    const toolName = typeof event.toolName === "string" ? event.toolName : "tool";
+    const input = isPlainObject(event.input) ? event.input : {};
     return {
-      toolCallId: this.nextToolCallId(),
-      toolName: typeof event.toolName === "string" ? event.toolName : "tool",
-      risk: inferToolApprovalRisk(event),
-      summary: "Approve tool execution",
-      details: {
-        piEventType: typeof event.type === "string" ? event.type : "unknown",
-      },
+      toolCallId: typeof event.toolCallId === "string" && event.toolCallId.length > 0
+        ? event.toolCallId
+        : this.nextToolCallId(),
+      toolName,
+      risk: toolApprovalRiskForTool(toolName),
+      summary: toolApprovalSummaryForTool(toolName),
+      details: toolApprovalDetailsForTool(toolName, input),
     };
   }
 
@@ -896,52 +928,141 @@ function resolvePiFauxProviderEntryPath(piEntryPath) {
 }
 
 /**
- * 判断 Pi event 是否表示工具调用。
+ * 生成 RuntimeHost 进度事件 payload，只暴露小字段，避免把工具参数或结果塞进协议。
  *
  * @param {object} event Pi event。
- * @returns {boolean} 是否为工具调用事件。
+ * @returns {object} runtimeActivity payload。
  */
-function isPiToolEvent(event) {
-  if (typeof event.type === "string" && event.type.startsWith("tool_execution_")) {
-    return true;
-  }
+function piActivityPayload(event) {
+  const payload = {
+    piEventType: typeof event.type === "string" ? event.type : "unknown",
+  };
   if (isPlainObject(event.assistantMessageEvent)) {
-    return String(event.assistantMessageEvent.type).startsWith("toolcall_");
+    payload.assistantEventType = typeof event.assistantMessageEvent.type === "string"
+      ? event.assistantMessageEvent.type
+      : "unknown";
   }
-  return hasToolCall(event.message);
+  addStringDetail(payload, "toolCallId", event.toolCallId);
+  addStringDetail(payload, "toolName", event.toolName);
+  return payload;
 }
 
 /**
- * 从 Pi event 粗略推断审批风险类型。
+ * 将 Pi 工具名称映射为 AgentMac 稳定审批风险类型。
  *
- * @param {object} event Pi event。
- * @returns {"shell"|"edit"|"network"|"unknown"} RuntimeHost 稳定风险类型。
+ * @param {string} toolName Pi tool name。
+ * @returns {"shell"|"edit"|"write"|"network"|"unknown"} RuntimeHost 稳定风险类型。
  */
-function inferToolApprovalRisk(event) {
-  const text = JSON.stringify(event).toLowerCase();
-  if (/bash|shell|terminal|command/.test(text)) {
-    return "shell";
+function toolApprovalRiskForTool(toolName) {
+  switch (toolName) {
+    case "bash":
+      return "shell";
+    case "read":
+    case "edit":
+      return "edit";
+    case "write":
+      return "write";
+    default:
+      return "unknown";
   }
-  if (/edit|write|file|patch/.test(text)) {
-    return "edit";
-  }
-  if (/network|http|url|fetch|request/.test(text)) {
-    return "network";
-  }
-  return "unknown";
 }
 
 /**
- * 判断 Pi message 是否包含 toolCall block。
+ * 生成工具审批摘要。
  *
- * @param {unknown} message Pi message。
- * @returns {boolean} 是否包含 toolCall。
+ * @param {string} toolName Pi tool name。
+ * @returns {string} 可展示摘要。
  */
-function hasToolCall(message) {
-  if (!isPlainObject(message) || !Array.isArray(message.content)) {
-    return false;
+function toolApprovalSummaryForTool(toolName) {
+  switch (toolName) {
+    case "bash":
+      return "Run shell command";
+    case "read":
+      return "Read file";
+    case "edit":
+      return "Edit file";
+    case "write":
+      return "Write file";
+    default:
+      return `Run ${toolName}`;
   }
-  return message.content.some((block) => isPlainObject(block) && block.type === "toolCall");
+}
+
+/**
+ * 生成工具审批详情，避免把完整文件内容直接塞进审批事件。
+ *
+ * @param {string} toolName Pi tool name。
+ * @param {object} input 已校验的工具参数。
+ * @returns {object} RuntimeHost details payload。
+ */
+function toolApprovalDetailsForTool(toolName, input) {
+  const details = {};
+  addStringDetail(details, "command", input.command);
+  addStringDetail(details, "path", input.path ?? input.file_path);
+  addNumberDetail(details, "timeout", input.timeout);
+  addNumberDetail(details, "offset", input.offset);
+  addNumberDetail(details, "limit", input.limit);
+
+  if (toolName === "write" && typeof input.content === "string") {
+    details.contentLength = input.content.length;
+    details.contentPreview = previewToolDetail(input.content);
+  }
+
+  if (toolName === "edit") {
+    const edits = Array.isArray(input.edits) ? input.edits.filter(isPlainObject) : [];
+    if (edits.length > 0) {
+      details.editCount = edits.length;
+      addStringDetail(details, "firstOldTextPreview", previewToolDetail(edits[0].oldText));
+      addStringDetail(details, "firstNewTextPreview", previewToolDetail(edits[0].newText));
+    } else {
+      addStringDetail(details, "oldTextPreview", previewToolDetail(input.oldText));
+      addStringDetail(details, "newTextPreview", previewToolDetail(input.newText));
+    }
+  }
+
+  return details;
+}
+
+/**
+ * 向详情对象添加字符串字段。
+ *
+ * @param {object} details 详情对象。
+ * @param {string} key 字段名。
+ * @param {unknown} value 值。
+ */
+function addStringDetail(details, key, value) {
+  if (typeof value === "string" && value.length > 0) {
+    details[key] = value;
+  }
+}
+
+/**
+ * 向详情对象添加数字字段。
+ *
+ * @param {object} details 详情对象。
+ * @param {string} key 字段名。
+ * @param {unknown} value 值。
+ */
+function addNumberDetail(details, key, value) {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    details[key] = value;
+  }
+}
+
+/**
+ * 截断工具详情中的大块文本。
+ *
+ * @param {unknown} value 原始值。
+ * @returns {string|undefined} 截断后的字符串。
+ */
+function previewToolDetail(value) {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  if (value.length <= TOOL_DETAIL_PREVIEW_LIMIT) {
+    return value;
+  }
+  return `${value.slice(0, TOOL_DETAIL_PREVIEW_LIMIT)}...`;
 }
 
 /**

@@ -18,7 +18,7 @@ nonisolated protocol SessionRuntimeBridging: AnyObject {
     /// - Parameters:
     ///   - sessionId: Runtime Host session id。
     ///   - content: 用户消息文本。
-    ///   - timeout: 等待本轮消息完成的秒数。
+    ///   - timeout: 等待下一条 Runtime Host event 的空闲秒数。
     ///   - onEvent: 每收到一条 Runtime Host event 时调用。
     /// - Returns: 本轮 Runtime Host events。
     @discardableResult
@@ -292,7 +292,7 @@ nonisolated final class ChatSession: @unchecked Sendable {
             try runtimeBridge.sendMessage(
                 sessionId: runtimeSessionID,
                 content: content,
-                timeout: 10,
+                timeout: 120,
                 onEvent: { [self] event in
                     try handleRuntimeEvent(event)
                 }
@@ -392,6 +392,8 @@ nonisolated final class ChatSession: @unchecked Sendable {
             touch()
             try persistRecord()
             emitSnapshot()
+        case "runtimeActivity":
+            return
         case "sessionAborted":
             try markAborted()
         case "toolApprovalRequested":

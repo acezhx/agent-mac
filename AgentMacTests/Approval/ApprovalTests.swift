@@ -41,6 +41,54 @@ struct ApprovalTests {
         #expect(evaluation == .requiresUserDecision)
     }
 
+    /// 验证默认 ask 策略下 Pi 内建 read/edit/write 自动允许。
+    @Test func builtInFileToolsAreAllowedByDefaultWhenPermissionAsks() {
+        let service = ApprovalService()
+        let permissions = PermissionConfig.default
+
+        #expect(service.evaluate(
+            makeRequest(toolName: "read", risk: .edit, details: [.init(key: "path", value: "README.md")]),
+            permissions: permissions
+        ) == .resolved(.allowed(reason: "Allowed by default built-in tool policy.")))
+        #expect(service.evaluate(
+            makeRequest(toolName: "edit", risk: .edit, details: [.init(key: "path", value: "App.swift")]),
+            permissions: permissions
+        ) == .resolved(.allowed(reason: "Allowed by default built-in tool policy.")))
+        #expect(service.evaluate(
+            makeRequest(toolName: "write", risk: .write, details: [.init(key: "path", value: "App.swift")]),
+            permissions: permissions
+        ) == .resolved(.allowed(reason: "Allowed by default built-in tool policy.")))
+    }
+
+    /// 验证默认 ask 策略下非删除文件的 bash 自动允许。
+    @Test func nonDeletingBashCommandsAreAllowedByDefaultWhenPermissionAsks() {
+        let service = ApprovalService()
+
+        #expect(service.evaluate(
+            makeRequest(toolName: "bash", risk: .shell, details: [.init(key: "command", value: "find . -name '*.md'")]),
+            permissions: .default
+        ) == .resolved(.allowed(reason: "Allowed by default bash policy.")))
+    }
+
+    /// 验证默认 ask 策略下删除文件的 bash 仍需要用户确认。
+    @Test func deletingBashCommandsStillRequireUserDecisionWhenPermissionAsks() {
+        let service = ApprovalService()
+        let deletingCommands = [
+            "rm -rf build",
+            "/bin/rm README.md",
+            "git rm README.md",
+            "find . -name '*.tmp' -delete",
+            "find . -name '*.tmp' -exec /bin/rm {} \\;",
+        ]
+
+        for command in deletingCommands {
+            #expect(service.evaluate(
+                makeRequest(toolName: "bash", risk: .shell, details: [.init(key: "command", value: command)]),
+                permissions: .default
+            ) == .requiresUserDecision)
+        }
+    }
+
     /// 验证 secrets 和 unknown 风险默认拒绝，避免没有明确策略时自动执行。
     @Test func secretsAndUnknownRiskDefaultToDeny() {
         let service = ApprovalService()
@@ -69,15 +117,17 @@ struct ApprovalTests {
         #expect(decision == .allowed(reason: "Approved in test."))
     }
 
-    private func makeRequest(risk: ToolApprovalRisk) -> ToolApprovalRequest {
+    private func makeRequest(
+        toolName: String = "bash",
+        risk: ToolApprovalRisk,
+        details: [ToolApprovalRequest.DetailField] = [.init(key: "command", value: "ls -la")]
+    ) -> ToolApprovalRequest {
         ToolApprovalRequest(
             toolCallID: "tool_001",
-            toolName: "bash",
+            toolName: toolName,
             risk: risk,
             summary: "Run shell command",
-            details: [
-                .init(key: "command", value: "ls -la"),
-            ]
+            details: details
         )
     }
 }

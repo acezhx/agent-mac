@@ -116,8 +116,10 @@ resolved:
 
 - 只用于验证 SwiftUI -> RuntimeBridge -> RuntimeHost -> Pi 主链路。
 - 使用 bundled Pi runtime。
-- Runtime Host 以 `noTools: "all"` 启动 Pi session，自定义 tools 和 Pi 内建工具都不启用。
-- Runtime Host 不加载 Pi extensions、skills、prompt templates、themes 和项目 context files。
+- Runtime Host 启用 Pi 内建 `read`、`bash`、`edit`、`write` 工具。
+- Runtime Host 不加载外部 Pi extensions、skills、prompt templates、themes 和项目 context files。
+- Pi 内建工具调用通过 Runtime Host 内联 extension 在执行前触发 `toolApprovalRequested`；
+  Swift 回传 `approved` 后继续执行，回传 `denied` 后由 Pi 收到被阻断的工具结果。
 - 需要模型凭据时，由 Swift 启动 Runtime Host 时通过安全方式提供；第一版测试可以使用
   mock streaming 替代真实模型调用。
 
@@ -324,6 +326,21 @@ Payload：
 {}
 ```
 
+### runtimeActivity
+
+表示 Runtime Host 在本轮 `sendMessage` 中仍有非文本进度，例如 Pi toolcall 流、工具执行开始、
+工具执行更新或工具执行结束。该事件用于让 Swift 侧延长空闲等待，不应创建用户可见消息。
+
+Payload：
+
+```json
+{
+  "piEventType": "tool_execution_start",
+  "toolCallId": "tool_001",
+  "toolName": "bash"
+}
+```
+
 ### toolApprovalRequested
 
 表示 runtime 请求工具审批。Swift Session 应根据 Agent 权限策略自动 allow/deny，或通过
@@ -392,10 +409,13 @@ internal_error
 ## 第一版审批策略
 
 - Runtime Host 发出 `toolApprovalRequested` 后等待 Swift 回传 `approveToolCall`。
+- Runtime Host 在 toolcall 流和工具执行阶段发出 `runtimeActivity` 心跳，避免没有 assistant 文本时
+  被 Swift 侧误判为空闲超时。
 - Agent 权限为 `allow` 时，Swift Session 自动回传 `approved`。
 - Agent 权限为 `deny` 时，Swift Session 自动回传 `denied`。
 - Agent 权限为 `ask` 时，AppShell 展示确认 UI；用户关闭审批 UI 按 `denied` 处理。
 - Runtime Host 只接收审批结果；工具执行仍留在 runtime 内部，不下沉到 Swift。
+- 当前权限模型没有独立 read 项；Pi `read` 工具按文件类风险进入现有 edit 权限策略。
 
 ## 兼容性规则
 

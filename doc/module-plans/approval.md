@@ -36,6 +36,8 @@ Approval
 - 支持 allow。
 - 支持 ask。
 - 支持 deny。
+- ask 下默认允许 Pi 内建 read/edit/write。
+- ask 下默认允许不匹配常见文件删除语义的 bash shell 请求。
 - 按 tool 类型判断：
   - shell
   - edit
@@ -86,7 +88,7 @@ Approval
 - runtime 返回工具审批请求时，UI 能展示请求详情。
 - 审批 UI 状态、用户选择和异步回传由 TCA Feature 管理。
 - 权限为 allow 时可以自动批准低风险请求。
-- 权限为 ask 时 UI 会等待用户选择。
+- 权限为 ask 时，Pi 内建 read/edit/write 文件类请求和非删除 bash shell 请求自动允许，其余请求等待用户选择。
 - 权限为 deny 时会直接拒绝。
 - 用户批准后 Runtime Host 收到 approved。
 - 用户拒绝后 Runtime Host 收到 denied。

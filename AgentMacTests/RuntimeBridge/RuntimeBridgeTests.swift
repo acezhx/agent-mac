@@ -206,6 +206,141 @@ struct RuntimeBridgeTests {
         #expect(events[1].payload?["text"]?.stringValue == "after approval")
     }
 
+    /// 验证等待用户审批的时间不会消耗外层 sendMessage 的 Runtime Host event 等待时间。
+    @Test func approvalWaitTimeDoesNotConsumeSendMessageTimeout() throws {
+        let root = temporaryRoot()
+        defer { removeTemporaryRoot(root) }
+        let script = root.appending(path: "approval-wait-time.js", directoryHint: .notDirectory)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try """
+        const readline = require('node:readline');
+        const rl = readline.createInterface({ input: process.stdin });
+        let nextEventNumber = 1;
+        let activeSendReplyTo = null;
+
+        function writeEvent(replyTo, sessionId, name, payload = {}) {
+          process.stdout.write(JSON.stringify({
+            type: 'event',
+            id: `evt_${String(nextEventNumber++).padStart(3, '0')}`,
+            replyTo,
+            sessionId,
+            name,
+            payload
+          }) + '\\n');
+        }
+
+        rl.on('line', (line) => {
+          const command = JSON.parse(line);
+          if (command.name === 'startSession') {
+            writeEvent(command.id, 'ses_001', 'sessionStarted', {});
+          } else if (command.name === 'sendMessage') {
+            activeSendReplyTo = command.id;
+            writeEvent(command.id, 'ses_001', 'toolApprovalRequested', {
+              toolCallId: 'tool_001',
+              toolName: 'bash',
+              risk: 'shell',
+              summary: 'Run shell command'
+            });
+          } else if (command.name === 'approveToolCall') {
+            writeEvent(command.id, 'ses_001', 'toolApprovalResolved', {
+              toolCallId: 'tool_001',
+              decision: command.payload.decision
+            });
+            setTimeout(() => {
+              writeEvent(activeSendReplyTo, 'ses_001', 'assistantDelta', { text: 'after approval' });
+              writeEvent(activeSendReplyTo, 'ses_001', 'messageCompleted', {});
+            }, 50);
+          }
+        });
+
+        setInterval(() => {}, 10000);
+        """.write(to: script, atomically: true, encoding: .utf8)
+
+        let bridge = RuntimeBridge(configuration: try makeConfiguration(root: root, hostScriptURL: script))
+        defer { bridge.stop() }
+
+        try bridge.start()
+        let sessionId = try bridge.startSession(workspacePath: root.path)
+        let events = try bridge.sendMessage(
+            sessionId: sessionId,
+            content: "ls -la",
+            timeout: 0.2,
+            onEvent: { event in
+                if event.name == "toolApprovalRequested" {
+                    Thread.sleep(forTimeInterval: 0.3)
+                    _ = try bridge.approveToolCall(
+                        sessionId: sessionId,
+                        toolCallID: "tool_001",
+                        decision: .allowed(reason: "Approved in test."),
+                        timeout: 1
+                    )
+                }
+            }
+        )
+
+        #expect(events.map(\.name) == ["toolApprovalRequested", "assistantDelta", "messageCompleted"])
+    }
+
+    /// 验证 runtimeActivity 可作为 Runtime Host 仍在工作的心跳，避免工具阶段被误判为空闲超时。
+    @Test func runtimeActivityExtendsSendMessageIdleTimeout() throws {
+        let root = temporaryRoot()
+        defer { removeTemporaryRoot(root) }
+        let script = root.appending(path: "runtime-activity-timeout.js", directoryHint: .notDirectory)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try """
+        const readline = require('node:readline');
+        const rl = readline.createInterface({ input: process.stdin });
+        let nextEventNumber = 1;
+
+        function writeEvent(replyTo, sessionId, name, payload = {}) {
+          process.stdout.write(JSON.stringify({
+            type: 'event',
+            id: `evt_${String(nextEventNumber++).padStart(3, '0')}`,
+            replyTo,
+            sessionId,
+            name,
+            payload
+          }) + '\\n');
+        }
+
+        rl.on('line', (line) => {
+          const command = JSON.parse(line);
+          if (command.name === 'startSession') {
+            writeEvent(command.id, 'ses_001', 'sessionStarted', {});
+          } else if (command.name === 'sendMessage') {
+            writeEvent(command.id, 'ses_001', 'runtimeActivity', { piEventType: 'tool_execution_start' });
+            setTimeout(() => {
+              writeEvent(command.id, 'ses_001', 'runtimeActivity', { piEventType: 'tool_execution_update' });
+            }, 100);
+            setTimeout(() => {
+              writeEvent(command.id, 'ses_001', 'assistantDelta', { text: 'done' });
+              writeEvent(command.id, 'ses_001', 'messageCompleted', {});
+            }, 250);
+          }
+        });
+
+        setInterval(() => {}, 10000);
+        """.write(to: script, atomically: true, encoding: .utf8)
+
+        let bridge = RuntimeBridge(configuration: try makeConfiguration(root: root, hostScriptURL: script))
+        defer { bridge.stop() }
+
+        try bridge.start()
+        let sessionId = try bridge.startSession(workspacePath: root.path)
+        let events = try bridge.sendMessage(
+            sessionId: sessionId,
+            content: "long running tool",
+            timeout: 0.2
+        )
+
+        #expect(events.map(\.name) == [
+            "runtimeActivity",
+            "runtimeActivity",
+            "assistantDelta",
+            "messageCompleted",
+        ])
+    }
+
     /// 验证 stdout 中的非法 JSONL event 会被映射为结构化解析错误。
     @Test func invalidRuntimeEventJSONReportsDecodeError() throws {
         let root = temporaryRoot()

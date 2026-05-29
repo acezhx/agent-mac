@@ -72,9 +72,9 @@
 重点覆盖：
 
 - 创建 Agent。
-- 编辑 system prompt。
+- 编辑自定义 Agent 的 system prompt。
 - 创建和编辑 Resource。
-- 选择资源。
+- 为自定义 Agent 选择资源。
 - 启动 session。
 - 发送消息。
 - 显示流式 assistant 输出。
@@ -174,6 +174,9 @@ xcodebuild test -scheme AgentMac -destination 'platform=macOS'
 - 未知 command 返回 `unsupported_command`。
 - mock `sendMessage` 返回多个 delta 和 completed。
 - 固定 Pi coding agent 可以启动。
+- 固定 Pi coding agent 启用 Pi 内建 `read`、`bash`、`edit`、`write` 工具，工具调用会在执行前进入
+  Runtime Host 审批 hook。
+- Runtime Host 会把 toolcall 和工具执行阶段的非文本进度转成 `runtimeActivity`。
 - vendored Node/Pi 存在时，faux provider 集成测试可以覆盖固定 Pi coding agent 的流式输出。
 
 固定 Pi coding agent 是 Runtime Host 的临时 session mode，用于验证 SwiftUI ->
@@ -193,6 +196,8 @@ Pi 会话。
 - Runtime Host error event 映射。
 - Runtime Host 退出后的错误处理。
 - stderr 日志收集。
+- `runtimeActivity` 会延长 `sendMessage` 的空闲等待，不会被误判为 Runtime Host 无响应。
+- 用户审批等待时间不消耗外层 `sendMessage` 的空闲等待窗口。
 
 ### Session
 
@@ -215,6 +220,8 @@ Pi 会话。
 
 - 创建 session 成功后保存 `ChatSessionSnapshot` 并启动快照订阅 effect。
 - 根 AppFeature 启动时初始化 Application Support 数据目录，且成功后不重复初始化。
+- 启动初始化会在缺失时创建表示内置 Pi coding agent 的默认 `coding-agent`，且不会覆盖用户已有的同 ID Agent。
+  默认 `coding-agent` 的编辑保存只覆盖模型配置。
 - 启动初始化失败时展示错误。
 - Runtime 常见启动错误映射为包含修复方向的 UI 提示。
 - 第一阶段已有当前 session 时不会再次创建本地 session。
@@ -225,9 +232,12 @@ Pi 会话。
 - create/start/send/abort/reset 失败时清理对应进行中标记并展示错误。
 - 快照订阅失败时展示错误。
 - Agent 列表加载后保存摘要。
-- 选择 Agent 后加载编辑区字段。
+- 选择 Agent 后加载编辑区字段，并同步已选择的 knowledge、skills、tools。
+- Agent 编辑页加载 ResourceLibrary 中可选的 knowledge、skills、tools。
+- Agent 编辑页勾选或取消勾选资源时更新当前编辑状态。
+- 保存默认 Pi coding agent 时只提交模型配置，并恢复 Pi 自身管理的 system prompt、资源和权限默认值。
 - 创建 Agent 后清空创建表单、选中新 Agent 并更新列表。
-- 保存 Agent 时保留当前 UI 尚未暴露的资源选择和权限配置。
+- 保存 Agent 时提交当前资源选择，并保留 system prompt、模型和权限配置。
 - Agent 创建和保存失败时清理对应进行中标记并展示错误。
 - Resource 列表按当前类型加载并保存摘要。
 - 切换 Resource 类型时清空编辑区并加载新类型列表。
@@ -284,9 +294,10 @@ Agent 管理、资源管理和 Approval UI 分别补 reducer 测试；必要的 
 必须自动化覆盖：
 
 - allow 自动批准。
-- ask 进入等待用户选择。
+- ask 下 Pi 内建 read/edit/write 自动批准。
+- ask 下非删除 bash shell 请求自动批准，匹配文件删除语义的 bash 进入等待用户选择。
 - deny 自动拒绝。
-- shell/edit/network 请求分类。
+- shell/edit/write/network 请求分类；Pi `read` 按文件类权限进入现有 edit 策略。
 - 关闭审批 UI 按 denied 处理。
 
 ## 端到端验收
@@ -307,8 +318,8 @@ Agent 管理、资源管理和 Approval UI 分别补 reducer 测试；必要的 
 
 ```text
 1. 创建 Agent。
-2. 编辑 system prompt。
-3. 选择 knowledge、skills、tools。
+2. 编辑自定义 Agent 的 system prompt。
+3. 为自定义 Agent 选择 knowledge、skills、tools。
 4. 保存 Agent。
 5. 重新打开 Agent，配置保持一致。
 6. 使用该 Agent 启动 session。
@@ -321,7 +332,7 @@ Agent 管理、资源管理和 Approval UI 分别补 reducer 测试；必要的 
 2. UI 展示审批请求。
 3. 用户批准后 runtime 收到 approved。
 4. 用户拒绝后 runtime 收到 denied。
-5. 默认策略不自动执行高风险工具。
+5. 默认策略自动执行 read/edit/write 和非删除 bash，但不自动执行匹配文件删除语义的 bash 等高风险工具。
 ```
 
 ## CI 和本地执行

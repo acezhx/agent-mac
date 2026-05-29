@@ -51,20 +51,24 @@ RuntimeHost
 - 使用 Runtime Host 内置的 Pi coding agent 默认配置启动 session。
 - 不读取用户 `agent.yaml`。
 - 不加载用户选择的 knowledge、skills、tools。
+- 启用 Pi 内建 `read`、`bash`、`edit`、`write` 工具。
 - 自定义 tools 默认不启用。
 - 接收用户消息。
 - 转发 assistant streaming output。
+- 转发 toolcall 和工具执行阶段的 `runtimeActivity` 心跳。
 - 转发 session completed 或 failed。
-- 当前实现使用 Pi `createAgentSession`、内存 session manager 和 `noTools: "all"`。
-- RuntimeHost 显式禁用 Pi extensions、skills、prompt templates、themes 和项目 context files。
+- 当前实现使用 Pi `createAgentSession`、内存 session manager 和显式 `tools` 列表。
+- RuntimeHost 显式禁用外部 Pi extensions、skills、prompt templates、themes 和项目 context files。
 - Pi 可变配置目录默认写入 `~/Library/Application Support/AgentMac/Pi`，也可由
   `AGENTMAC_PI_AGENT_DIR` 覆盖。
 
 ### 审批扩展点
 
-- 如果 Pi/runtime 返回工具审批请求，输出 `toolApprovalRequested`。
+- RuntimeHost 通过内联 Pi extension 在 `tool_call` 执行前输出 `toolApprovalRequested`。
 - 支持 `approveToolCall` command，接收 approved/denied 决策。
-- RuntimeHost 只接收决策并继续 runtime 流程，不把工具执行下沉到 Swift。
+- RuntimeHost 只接收决策；approved 时继续 Pi runtime 流程，denied 时向 Pi 返回阻断结果，
+  不把工具执行下沉到 Swift。
+- toolcall 流和工具执行开始/更新/结束会输出 `runtimeActivity`，作为 Swift 侧空闲等待心跳。
 
 ### 错误与日志
 

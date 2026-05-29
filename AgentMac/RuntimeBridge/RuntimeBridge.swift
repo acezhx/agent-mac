@@ -514,7 +514,7 @@ nonisolated final class RuntimeBridge: @unchecked Sendable {
     /// - Parameters:
     ///   - sessionId: Runtime Host session id。
     ///   - content: 用户文本消息。
-    ///   - timeout: 等待本轮消息完成的秒数。
+    ///   - timeout: 等待下一条 Runtime Host event 的空闲秒数。
     ///   - onEvent: 每收到一条本轮 event 时调用；用于上层实时合并 streaming delta。
     /// - Returns: 本轮 command 对应的 Runtime Host events，包含 assistant delta 和 completed。
     /// - Throws: 进程未启动、写入失败、超时或 Runtime Host 返回 error event 时抛出错误。
@@ -538,9 +538,8 @@ nonisolated final class RuntimeBridge: @unchecked Sendable {
         try send(command)
 
         var events: [RuntimeEvent] = []
-        let deadline = Date().addingTimeInterval(timeout)
         while true {
-            let event = try readMatchingEvent(replyTo: command.id, deadline: deadline)
+            let event = try readMatchingEvent(replyTo: command.id, timeout: timeout)
             try onEvent?(event)
             events.append(event)
             if event.name == "messageCompleted" {

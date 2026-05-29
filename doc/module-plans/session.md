@@ -124,6 +124,7 @@ Session 依赖 Approval 的纯服务和处理器协议，不依赖 TCA 或 Swift
   `SessionError`，不会追加新的用户消息。
 - `sessionAborted` 后迟到的 Runtime events 会被忽略，避免 aborted 终态被后续 delta 或 completed 覆盖。
 - 未知非 error Runtime events 按 Runtime 协议记录日志并忽略，避免新增 event 破坏旧 Session。
+- `runtimeActivity` 是已知心跳事件，只用于延长 RuntimeBridge 空闲等待，不创建消息也不记录未知事件日志。
 - `reset()` 会写入重置后的完整 record；持久化失败时抛出结构化错误，并保留原内存状态。
 - `ChatSession` 收到 `toolApprovalRequested` 后会通过 `ApprovalService` 自动处理 allow/deny；
   ask 策略下设置 pending request、等待 `ToolApprovalHandling` 返回，再调用 RuntimeBridge

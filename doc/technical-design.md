@@ -196,9 +196,16 @@ Node Runtime Host 是 SwiftUI 和 Pi 之间的桥。
 - 在 `ResolvedAgentConfig` 模式下读取 system prompt、knowledge、skills、tools 绝对路径。
 - 启动和管理 Pi sessions。
 - 将 Pi events 流式转发给 SwiftUI。
+- 将 Pi toolcall 和工具执行阶段的非文本进度转成 `runtimeActivity`，作为 Swift 侧空闲等待心跳。
 - 遇到工具审批请求时上报 `toolApprovalRequested`，等待 Swift 侧通过 `approveToolCall`
   返回 approved/denied。
 - 在用户请求时停止或中断运行中的 session。
+
+当前固定 Pi coding agent 模式由 Runtime Host 直接创建 Pi session：AgentMac 启用 Pi 内建
+`read`、`bash`、`edit`、`write` 工具，并通过内联 Pi extension 在工具执行前接入
+`toolApprovalRequested` / `approveToolCall` 审批流；同时关闭外部 Pi extensions、skills、
+prompt templates、themes 和 context files 加载。默认 `coding-agent` 因此不读取 AgentLibrary
+的资源；权限字段仍由当前固定模式的审批流解释，默认编辑页不暴露这些字段。
 
 SwiftUI 应通过一组小命令调用 Runtime Host：
 
@@ -261,8 +268,10 @@ AgentMac/
 - `AgentMacApp.swift`：声明主窗口、Agent Library 窗口和 Resource Library 窗口。
 - `AppFeature.swift`：根 TCA Feature，组合固定 coding agent 会话页面，并编排首次启动初始化。
 - `AppView.swift`：根视图、启动错误提示、会话工作台和管理窗口入口 SwiftUI 渲染。
-- `AppStartupClient.swift`：启动初始化的 TCA dependency 边界。live 实现内部调用 `FileStore.initialize()`，
-  reducer 和 SwiftUI View 只依赖该 dependency。
+- `AppStartupClient.swift`：启动初始化的 TCA dependency 边界。live 实现内部初始化 `FileStore`，
+  并在缺失时创建默认 `coding-agent`。该默认 Agent 表示当前内置的 Pi coding agent；reducer 和
+  SwiftUI View 只依赖该 dependency。默认 `coding-agent` 的提示词、资源和权限由 Pi coding
+  agent 当前运行模式管理，Agent 编辑页只暴露模型 provider/name 配置。
 - `AgentFeature.swift`：Agent 管理页面 state、action、reducer 和异步 effect 编排。
 - `AgentView.swift`：Agent 列表、创建表单和编辑表单 SwiftUI 渲染。
 - `AppAgentClient.swift`：Agent 管理的 TCA dependency 边界。live 实现内部调用
@@ -278,13 +287,16 @@ AgentMac/
 
 主窗口当前默认显示会话工作台，Agent 管理和 Resource 管理从 toolbar 入口以独立窗口打开。
 Agent 管理当前支持列表、创建、选中加载、编辑名称、编辑模型 provider/name、编辑 system
-prompt 和保存。Resource 管理当前支持 knowledge、skill 和 tool 的列表、创建、纯文本编辑和保存，
+prompt、选择 knowledge/skills/tools 和保存；其中默认 `coding-agent` 只展示并保存模型配置，
+不展示 Pi coding agent 自身管理的名称、system prompt、资源和权限字段。Resource 管理当前支持
+knowledge、skill 和 tool 的列表、创建、纯文本编辑和保存，
 并支持 knowledge 改名、保存成功提示和删除当前选中的 knowledge、skill、tool。
 其中 knowledge、skill 和 tool 创建由 AppShell 自动生成未占用 ID，创建表单不暴露 ID 输入；tool
 使用 `tool`、`tool-2`、`tool-3` 序列，展示名称和配置一起在 `tool.yaml` 中编辑；skill 导入由
 AppShell 选择本地目录，并通过 `AppResourceClient` 生成基于源目录名的未占用 ID 后交给
-`ResourceLibrary` 复制。工具审批确认 UI 已通过会话页面接入；资源选择和可配置 Agent session
-后续再接入。
+`ResourceLibrary` 复制。Agent 编辑页通过 `AppResourceClient` 加载共享资源，并把选择结果保存为
+相对 `agent.yaml` 的 `../../library/...` 引用。工具审批确认 UI 已通过会话页面接入；可配置
+Agent session 后续再接入。
 
 ### FileStore
 
@@ -494,8 +506,9 @@ record 应降级为 failed。
 - `ApprovalService` 根据 `ResolvedAgentConfig.permissions` 解释 allow/ask/deny。
 - allow 直接由 `Session` 回传 `approved`。
 - deny 直接由 `Session` 回传 `denied`。
-- ask 通过 `ChatSessionSnapshot.pendingToolApprovalRequest` 暴露给 AppShell；AppShell/TCA
-  展示确认 UI，并通过 `AppSessionClient` 提交用户决策。
+- ask 下 Pi 内建 `read`、`edit`、`write` 的文件类请求默认允许；`bash` 的 shell 请求在命令不匹配常见文件删除语义时默认允许。
+- 其余 ask 请求通过 `ChatSessionSnapshot.pendingToolApprovalRequest` 暴露给 AppShell；AppShell/TCA
+  展示确认 UI，并通过 `AppSessionClient` 提交用户决策。匹配文件删除语义的 `bash` 仍进入交互审批。
 - `ToolApprovalHandling` 不能依赖 TCA。live AppShell 使用 `InteractiveToolApprovalHandler`
   将 UI 决策交回正在等待的 Session。
 - 用户关闭审批 UI 时按 denied 处理。
@@ -510,14 +523,16 @@ record 应降级为 failed。
 - 加载 Pi。
 - 启动 Pi sessions。
 - 将 Pi events 转发给 Swift。
+- 在 Pi toolcall 和工具执行阶段输出 `runtimeActivity`，避免长时间无 assistant 文本时触发误超时。
 - 遇到工具审批请求时输出 `toolApprovalRequested`，等待 Swift 通过 `approveToolCall` 返回
   `approved` 或 `denied`。
 - 用 Swift 友好的事件格式返回错误和诊断信息。
 
 第一阶段 RuntimeHost 只支持固定 `fixedCodingAgent` session mode，用于验证
 SwiftUI -> RuntimeBridge -> RuntimeHost -> Pi 主链路。该模式不读取用户 `agent.yaml`，不加载
-用户选择的 knowledge、skills、tools，并禁用 Pi tools、extensions、skills、prompt templates、
-themes 和项目 context files。
+用户选择的 knowledge、skills、tools；Runtime Host 只启用 Pi 内建 `read`、`bash`、`edit`、
+`write` 工具，并禁用外部 Pi extensions、skills、prompt templates、themes 和项目 context
+files。
 
 后续可配置 Agent 阶段再支持 `resolved` mode，接收 Swift 侧 `AgentLibrary` 生成的
 `ResolvedAgentConfig`，并读取其中的 system prompt、knowledge、skills、tools 绝对路径。

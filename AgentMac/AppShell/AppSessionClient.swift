@@ -388,11 +388,14 @@ private nonisolated final class LiveStorage {
 
 /// 固定 Pi coding agent 的临时配置工厂。
 private nonisolated enum FixedCodingAgentConfig {
-    /// 固定 coding agent 的内部 ID。
-    static let id = "fixed-coding-agent"
+    /// 旧版固定 coding agent session record 中使用的内部 ID。
+    static let legacyID = "fixed-coding-agent"
 
-    /// 固定 coding agent 的展示名称。
-    static let name = "Fixed Pi Coding Agent"
+    /// 固定 Pi coding agent 的内部 ID。
+    static let id = DefaultCodingAgentTemplate.id
+
+    /// 固定 Pi coding agent 的展示名称。
+    static let name = DefaultCodingAgentTemplate.name
 
     /// 生成当前阶段使用的 `ResolvedAgentConfig`。
     ///
@@ -422,8 +425,8 @@ private nonisolated struct FixedCodingAgentResolver: SessionAgentConfigResolving
     ///   - workspaceDirectory: 会话工作区目录。
     /// - Returns: 固定 coding agent 的运行配置。
     func resolvedAgentConfig(for id: String, workspaceDirectory: URL) throws -> ResolvedAgentConfig {
-        guard id == FixedCodingAgentConfig.id else {
-            throw AppSessionClientError("Unsupported fixed session agent id: \(id).")
+        guard id == FixedCodingAgentConfig.id || id == FixedCodingAgentConfig.legacyID else {
+            throw AppSessionClientError("Unsupported Pi coding agent id: \(id).")
         }
         return FixedCodingAgentConfig.resolved(workspaceDirectory: workspaceDirectory)
     }

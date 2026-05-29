@@ -1,6 +1,21 @@
 import ComposableArchitecture
 import Foundation
 
+/// Agent 编辑页可选择的共享资源列表。
+nonisolated struct AgentResourceOptions: Equatable, Sendable {
+    /// 可选择的 knowledge 文件。
+    var knowledge: [AppResourceSummary]
+
+    /// 可选择的 skill 目录。
+    var skills: [AppResourceSummary]
+
+    /// 可选择的 tool 目录。
+    var tools: [AppResourceSummary]
+
+    /// 空资源列表。
+    static let empty = AgentResourceOptions(knowledge: [], skills: [], tools: [])
+}
+
 /// Agent 管理页面 Feature。
 ///
 /// 该 Feature 只管理 Agent 列表、创建表单和编辑表单的 UI 状态。Agent 文件读写通过
@@ -18,6 +33,15 @@ struct AgentFeature {
 
         /// 当前加载到编辑区的 Agent。
         var selectedAgent: Agent?
+
+        /// Agent 编辑页可选择的 knowledge 文件。
+        var availableKnowledge: [AppResourceSummary]
+
+        /// Agent 编辑页可选择的 skill 目录。
+        var availableSkills: [AppResourceSummary]
+
+        /// Agent 编辑页可选择的 tool 目录。
+        var availableTools: [AppResourceSummary]
 
         /// 创建表单中的 Agent ID。
         var newAgentID: String
@@ -37,11 +61,23 @@ struct AgentFeature {
         /// 编辑表单中的 system prompt。
         var editorSystemPrompt: String
 
+        /// 编辑表单中已选择的 knowledge 引用路径。
+        var editorKnowledgeReferences: [String]
+
+        /// 编辑表单中已选择的 skill 引用路径。
+        var editorSkillReferences: [String]
+
+        /// 编辑表单中已选择的 tool 引用路径。
+        var editorToolReferences: [String]
+
         /// 最近一次操作错误。
         var errorMessage: String?
 
         /// 是否正在加载列表。
         var isLoadingList: Bool
+
+        /// 是否正在加载可选资源列表。
+        var isLoadingResources: Bool
 
         /// 是否正在加载选中 Agent。
         var isLoadingAgent: Bool
@@ -57,14 +93,21 @@ struct AgentFeature {
             self.agents = []
             self.selectedAgentID = nil
             self.selectedAgent = nil
+            self.availableKnowledge = []
+            self.availableSkills = []
+            self.availableTools = []
             self.newAgentID = ""
             self.newAgentName = ""
             self.editorName = ""
             self.editorModelProvider = ""
             self.editorModelName = ""
             self.editorSystemPrompt = ""
+            self.editorKnowledgeReferences = []
+            self.editorSkillReferences = []
+            self.editorToolReferences = []
             self.errorMessage = nil
             self.isLoadingList = false
+            self.isLoadingResources = false
             self.isLoadingAgent = false
             self.isCreatingAgent = false
             self.isSavingAgent = false
@@ -72,7 +115,7 @@ struct AgentFeature {
 
         /// 是否有 Agent 操作正在运行。
         var hasOperationInFlight: Bool {
-            isLoadingList || isLoadingAgent || isCreatingAgent || isSavingAgent
+            isLoadingList || isLoadingResources || isLoadingAgent || isCreatingAgent || isSavingAgent
         }
 
         /// 是否可以创建 Agent。
@@ -86,15 +129,25 @@ struct AgentFeature {
         var canSaveAgent: Bool {
             selectedAgent != nil
                 && !hasOperationInFlight
-                && !editorName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && (isEditingDefaultCodingAgent
+                    || !editorName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 && !editorModelProvider.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 && !editorModelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+
+        /// 当前编辑对象是否为内置 Pi coding agent。
+        var isEditingDefaultCodingAgent: Bool {
+            selectedAgent?.id == DefaultCodingAgentTemplate.id
         }
 
         /// 当前编辑区标题。
         var editorTitle: String {
             guard let selectedAgent else {
                 return "No Agent"
+            }
+
+            if isEditingDefaultCodingAgent {
+                return DefaultCodingAgentTemplate.name
             }
 
             let name = editorName.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -108,6 +161,9 @@ struct AgentFeature {
             editorModelProvider = ""
             editorModelName = ""
             editorSystemPrompt = ""
+            editorKnowledgeReferences = []
+            editorSkillReferences = []
+            editorToolReferences = []
         }
 
         /// 用 Agent 填充编辑区。
@@ -120,6 +176,18 @@ struct AgentFeature {
             editorModelProvider = agent.manifest.model.provider
             editorModelName = agent.manifest.model.name
             editorSystemPrompt = agent.systemPrompt
+            editorKnowledgeReferences = agent.manifest.knowledge
+            editorSkillReferences = agent.manifest.skills
+            editorToolReferences = agent.manifest.tools
+        }
+
+        /// 用共享资源列表填充编辑页可选资源。
+        ///
+        /// - Parameter options: 资源库当前已有的共享资源列表。
+        mutating func populateResourceOptions(with options: AgentResourceOptions) {
+            availableKnowledge = options.knowledge
+            availableSkills = options.skills
+            availableTools = options.tools
         }
 
         /// 生成可保存的 Agent 编辑模型。
@@ -135,8 +203,44 @@ struct AgentFeature {
                 provider: editorModelProvider,
                 name: editorModelName
             )
+
+            if agent.id == DefaultCodingAgentTemplate.id {
+                agent.manifest.name = DefaultCodingAgentTemplate.name
+                agent.manifest.knowledge = []
+                agent.manifest.skills = []
+                agent.manifest.tools = []
+                agent.manifest.permissions = .default
+                agent.systemPrompt = DefaultCodingAgentTemplate.systemPrompt
+                return agent
+            }
+
+            agent.manifest.knowledge = editorKnowledgeReferences
+            agent.manifest.skills = editorSkillReferences
+            agent.manifest.tools = editorToolReferences
             agent.systemPrompt = editorSystemPrompt
             return agent
+        }
+
+        /// 更新指定资源引用的选择状态。
+        ///
+        /// - Parameters:
+        ///   - kind: 资源类型。
+        ///   - reference: 写入 `agent.yaml` 的资源引用路径。
+        ///   - isSelected: 是否选中。
+        mutating func setResourceSelection(kind: AppResourceKind, reference: String, isSelected: Bool) {
+            let trimmedReference = reference.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmedReference.isEmpty else {
+                return
+            }
+
+            switch kind {
+            case .knowledge:
+                Self.setReference(trimmedReference, isSelected: isSelected, in: &editorKnowledgeReferences)
+            case .skill:
+                Self.setReference(trimmedReference, isSelected: isSelected, in: &editorSkillReferences)
+            case .tool:
+                Self.setReference(trimmedReference, isSelected: isSelected, in: &editorToolReferences)
+            }
         }
 
         /// 插入或替换 Agent 摘要，并按 ID 稳定排序。
@@ -146,6 +250,16 @@ struct AgentFeature {
             agents.removeAll { $0.id == summary.id }
             agents.append(summary)
             agents.sort { $0.id < $1.id }
+        }
+
+        private static func setReference(_ reference: String, isSelected: Bool, in references: inout [String]) {
+            if isSelected {
+                if !references.contains(reference) {
+                    references.append(reference)
+                }
+            } else {
+                references.removeAll { $0 == reference }
+            }
         }
     }
 
@@ -162,6 +276,12 @@ struct AgentFeature {
 
         /// Agent 列表加载失败。
         case loadAgentsFailed(AppAgentClientError)
+
+        /// 可选资源列表加载成功。
+        case loadResourceOptionsSucceeded(AgentResourceOptions)
+
+        /// 可选资源列表加载失败。
+        case loadResourceOptionsFailed(AppResourceClientError)
 
         /// 用户选择 Agent。
         case agentSelected(String?)
@@ -199,6 +319,9 @@ struct AgentFeature {
         /// 编辑表单 system prompt 变化。
         case editorSystemPromptChanged(String)
 
+        /// 编辑表单资源选择变化。
+        case resourceSelectionChanged(kind: AppResourceKind, reference: String, isSelected: Bool)
+
         /// 用户点击保存 Agent。
         case saveAgentButtonTapped
 
@@ -210,7 +333,7 @@ struct AgentFeature {
     }
 
     private nonisolated enum CancelID: Hashable {
-        case list
+        case pageData
         case selectedAgent
     }
 
@@ -220,8 +343,9 @@ struct AgentFeature {
             switch action {
             case .task, .refreshButtonTapped:
                 state.isLoadingList = true
+                state.isLoadingResources = true
                 state.errorMessage = nil
-                return loadAgentsEffect()
+                return loadPageDataEffect()
 
             case let .loadAgentsSucceeded(agents):
                 state.isLoadingList = false
@@ -235,6 +359,16 @@ struct AgentFeature {
 
             case let .loadAgentsFailed(error):
                 state.isLoadingList = false
+                state.errorMessage = error.message
+                return .none
+
+            case let .loadResourceOptionsSucceeded(options):
+                state.isLoadingResources = false
+                state.populateResourceOptions(with: options)
+                return .none
+
+            case let .loadResourceOptionsFailed(error):
+                state.isLoadingResources = false
                 state.errorMessage = error.message
                 return .none
 
@@ -318,6 +452,10 @@ struct AgentFeature {
                 state.editorSystemPrompt = systemPrompt
                 return .none
 
+            case let .resourceSelectionChanged(kind, reference, isSelected):
+                state.setResourceSelection(kind: kind, reference: reference, isSelected: isSelected)
+                return .none
+
             case .saveAgentButtonTapped:
                 guard state.canSaveAgent, let agent = state.editedAgent() else {
                     return .none
@@ -349,8 +487,9 @@ struct AgentFeature {
         }
     }
 
-    private func loadAgentsEffect() -> Effect<Action> {
+    private func loadPageDataEffect() -> Effect<Action> {
         @Dependency(AppAgentClient.self) var appAgentClient
+        @Dependency(AppResourceClient.self) var appResourceClient
         return .run { send in
             do {
                 let agents = try await appAgentClient.listAgents()
@@ -358,8 +497,19 @@ struct AgentFeature {
             } catch {
                 await send(.loadAgentsFailed(AppAgentClientError(error)))
             }
+
+            do {
+                let options = AgentResourceOptions(
+                    knowledge: try await appResourceClient.listResources(.knowledge),
+                    skills: try await appResourceClient.listResources(.skill),
+                    tools: try await appResourceClient.listResources(.tool)
+                )
+                await send(.loadResourceOptionsSucceeded(options))
+            } catch {
+                await send(.loadResourceOptionsFailed(AppResourceClientError(error)))
+            }
         }
-        .cancellable(id: CancelID.list, cancelInFlight: true)
+        .cancellable(id: CancelID.pageData, cancelInFlight: true)
     }
 
     private func loadAgentEffect(id: String) -> Effect<Action> {

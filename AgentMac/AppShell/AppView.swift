@@ -136,7 +136,7 @@ private struct SessionView: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top, spacing: 16) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Fixed Coding Agent")
+                    Text(DefaultCodingAgentTemplate.name)
                         .font(.title2.weight(.semibold))
                     Text(store.statusDetail)
                         .foregroundStyle(.secondary)
@@ -383,23 +383,10 @@ private struct ToolApprovalSheet: View {
                 Spacer()
             }
 
-            LabeledContent("Risk", value: request.risk.rawValue)
-            LabeledContent("Tool Call", value: request.toolCallID)
-
-            if !request.details.isEmpty {
+            if !visibleDetails.isEmpty {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Details")
-                        .font(.subheadline.weight(.semibold))
-                    ForEach(request.details) { detail in
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(detail.key)
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(.secondary)
-                            Text(detail.value)
-                                .font(.system(.body, design: .monospaced))
-                                .textSelection(.enabled)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
+                    ForEach(visibleDetails) { detail in
+                        ApprovalDetailField(detail: detail)
                     }
                 }
             }
@@ -425,6 +412,121 @@ private struct ToolApprovalSheet: View {
         .padding(20)
         .frame(width: 460)
         .interactiveDismissDisabled(isResolving)
+    }
+
+    /// 弹窗展示的精简详情。
+    private var visibleDetails: [VisibleApprovalDetail] {
+        let detailsByKey = Dictionary(uniqueKeysWithValues: request.details.map { ($0.key, $0.value) })
+        let keys: [String]
+        switch request.toolName {
+        case "bash":
+            keys = ["command"]
+        case "read":
+            keys = ["path", "offset", "limit"]
+        case "edit":
+            keys = ["path", "editCount"]
+        case "write":
+            keys = ["path", "contentLength"]
+        default:
+            keys = ["path", "command"]
+        }
+
+        return keys.compactMap { key in
+            guard let value = detailsByKey[key], !value.isEmpty else {
+                return nil
+            }
+            return VisibleApprovalDetail(key: key, value: value)
+        }
+    }
+}
+
+/// 审批弹窗中的单个详情字段。
+private struct ApprovalDetailField: View {
+    /// 要展示的详情。
+    let detail: VisibleApprovalDetail
+
+    /// 字段内容。
+    var body: some View {
+        if detail.requiresFullText {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(detail.displayKey)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+
+                ScrollView(.vertical) {
+                    Text(detail.displayValue)
+                        .font(.system(.callout, design: .monospaced))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(8)
+                }
+                .frame(maxHeight: 180)
+                .background(Color(nsColor: .textBackgroundColor))
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 6)
+                        .stroke(Color(nsColor: .separatorColor))
+                }
+            }
+        } else {
+            LabeledContent(detail.displayKey) {
+                Text(detail.displayValue)
+                    .font(.system(.callout, design: detail.isMonospaced ? .monospaced : .default))
+                    .lineLimit(4)
+                    .textSelection(.enabled)
+            }
+        }
+    }
+}
+
+/// 审批弹窗中展示的精简详情。
+private struct VisibleApprovalDetail: Identifiable {
+    /// RuntimeHost detail key。
+    let key: String
+
+    /// RuntimeHost detail value。
+    let value: String
+
+    /// 稳定 id。
+    var id: String { key }
+
+    /// 面向用户的字段名。
+    var displayKey: String {
+        switch key {
+        case "command":
+            "Command"
+        case "path":
+            "Path"
+        case "offset":
+            "Offset"
+        case "limit":
+            "Limit"
+        case "editCount":
+            "Edits"
+        case "contentLength":
+            "Bytes"
+        default:
+            key
+        }
+    }
+
+    /// 面向用户展示的字段值。
+    var displayValue: String {
+        if ["offset", "limit", "editCount", "contentLength"].contains(key),
+           value.hasSuffix(".0") {
+            return String(value.dropLast(2))
+        }
+        return value
+    }
+
+    /// 是否使用等宽字体展示。
+    var isMonospaced: Bool {
+        key == "command" || key == "path"
+    }
+
+    /// 是否需要完整展示。
+    var requiresFullText: Bool {
+        key == "command"
     }
 }
 

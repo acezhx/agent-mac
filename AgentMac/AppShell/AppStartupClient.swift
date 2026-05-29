@@ -3,11 +3,25 @@ import Foundation
 
 /// AppShell 首次启动初始化边界。
 ///
-/// 该 dependency 只负责应用启动时必须完成的本地数据目录初始化，避免根 Feature 直接持有
-/// `FileStore` 或理解 Application Support 布局细节。
+/// 该 dependency 只负责应用启动时必须完成的本地数据目录初始化和默认数据种子，避免根 Feature
+/// 直接持有 `FileStore` 或理解 Application Support 布局细节。
 nonisolated struct AppStartupClient: Sendable {
     /// 初始化 Application Support 数据目录。
     var initializeAppData: @Sendable () async throws -> Void
+}
+
+/// 应用首次初始化时写入的默认 coding Agent。
+nonisolated enum DefaultCodingAgentTemplate {
+    /// 默认 Pi coding agent 的持久化 ID。
+    static let id = "coding-agent"
+
+    /// 默认 Pi coding agent 的展示名称。
+    static let name = "Pi Coding Agent"
+
+    /// 默认 Pi coding agent 的 system prompt。
+    ///
+    /// 该 Agent 的提示词和工具权限由 Pi coding agent 自身提供，AgentMac 只持久化模型配置。
+    static let systemPrompt = ""
 }
 
 /// AppShell 启动初始化对 UI 暴露的结构化错误。
@@ -49,7 +63,7 @@ extension AppStartupClient: DependencyKey {
     static let liveValue = AppStartupClient(
         initializeAppData: {
             let fileStore = try FileStore()
-            try fileStore.initialize()
+            try AppStartupClient.initializeAppData(fileStore: fileStore)
         }
     )
 
@@ -59,6 +73,29 @@ extension AppStartupClient: DependencyKey {
             throw AppStartupClientError("AppStartupClient.initializeAppData is not implemented for this test.")
         }
     )
+}
+
+extension AppStartupClient {
+    /// 初始化 app data 并确保默认 coding Agent 存在。
+    ///
+    /// - Parameter fileStore: 当前 app data 根目录对应的文件服务。
+    nonisolated static func initializeAppData(fileStore: FileStore) throws {
+        try fileStore.initialize()
+        try seedDefaultCodingAgentIfNeeded(fileStore: fileStore)
+    }
+
+    private nonisolated static func seedDefaultCodingAgentIfNeeded(fileStore: FileStore) throws {
+        guard try !fileStore.directoryExists(at: "agents/\(DefaultCodingAgentTemplate.id)") else {
+            return
+        }
+
+        let agentLibrary = AgentLibrary(fileStore: fileStore)
+        try agentLibrary.createAgent(
+            id: DefaultCodingAgentTemplate.id,
+            name: DefaultCodingAgentTemplate.name,
+            systemPrompt: DefaultCodingAgentTemplate.systemPrompt
+        )
+    }
 }
 
 extension DependencyValues {

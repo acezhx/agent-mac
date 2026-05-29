@@ -1,4 +1,5 @@
 import ComposableArchitecture
+import Foundation
 import Testing
 @testable import AgentMac
 
@@ -48,6 +49,59 @@ struct AppFeatureTests {
             $0.startupErrorMessage = "startup failed"
         }
         await store.finish()
+    }
+
+    /// 验证启动初始化会创建默认 coding Agent。
+    @Test func startupClientSeedsDefaultCodingAgent() throws {
+        let (fileStore, root) = try makeFileStore()
+        defer { removeTemporaryRoot(root) }
+
+        try AppStartupClient.initializeAppData(fileStore: fileStore)
+
+        let agent = try AgentLibrary(fileStore: fileStore)
+            .loadAgent(id: DefaultCodingAgentTemplate.id)
+
+        #expect(agent.id == "coding-agent")
+        #expect(agent.manifest.name == "Pi Coding Agent")
+        #expect(agent.manifest.model == .default)
+        #expect(agent.manifest.systemPrompt == "system.md")
+        #expect(agent.manifest.knowledge == [])
+        #expect(agent.manifest.skills == [])
+        #expect(agent.manifest.tools == [])
+        #expect(agent.manifest.permissions == .default)
+        #expect(agent.systemPrompt == DefaultCodingAgentTemplate.systemPrompt)
+    }
+
+    /// 验证已有默认 coding Agent 时启动初始化不会覆盖用户修改。
+    @Test func startupClientDoesNotOverwriteExistingCodingAgent() throws {
+        let (fileStore, root) = try makeFileStore()
+        defer { removeTemporaryRoot(root) }
+
+        let agentLibrary = AgentLibrary(fileStore: fileStore)
+        try fileStore.initialize()
+        var existingAgent = try agentLibrary.createAgent(
+            id: DefaultCodingAgentTemplate.id,
+            name: "Custom Coding",
+            systemPrompt: "Custom prompt"
+        )
+        existingAgent.manifest.model = ModelConfig(provider: "local", name: "custom-model")
+        existingAgent.manifest.permissions = PermissionConfig(bash: .deny, edit: .ask, network: .deny)
+        try agentLibrary.saveAgent(existingAgent)
+
+        try AppStartupClient.initializeAppData(fileStore: fileStore)
+
+        let loadedAgent = try agentLibrary.loadAgent(id: DefaultCodingAgentTemplate.id)
+        #expect(loadedAgent == existingAgent)
+    }
+
+    private func makeFileStore() throws -> (FileStore, URL) {
+        let root = FileManager.default.temporaryDirectory
+            .appending(path: "AgentMac-AppStartupClientTests-\(UUID().uuidString)", directoryHint: .isDirectory)
+        return (FileStore(rootDirectory: root), root)
+    }
+
+    private func removeTemporaryRoot(_ root: URL) {
+        try? FileManager.default.removeItem(at: root)
     }
 }
 

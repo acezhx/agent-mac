@@ -313,6 +313,254 @@ test("approveToolCall rejects missing pending approval", async (t) => {
   assert.equal(event.payload.code, "missing_tool_approval");
 });
 
+test("createPiSession enables approved Pi built-in tools", async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), "agentmac-runtimehost-tools-"));
+  const previousAgentDir = process.env.AGENTMAC_PI_AGENT_DIR;
+  process.env.AGENTMAC_PI_AGENT_DIR = join(tempDir, "agent");
+
+  let resourceOptions;
+  let createOptions;
+  const host = createInProcessRuntimeHost();
+  host.piRuntime = {
+    module: {
+      SettingsManager: {
+        create() {
+          return {};
+        },
+      },
+      DefaultResourceLoader: class {
+        constructor(options) {
+          resourceOptions = options;
+        }
+
+        async reload() {}
+      },
+      SessionManager: {
+        inMemory(cwd) {
+          return { cwd };
+        },
+      },
+      async createAgentSession(options) {
+        createOptions = options;
+        return {
+          session: {
+            subscribe() {
+              return () => {};
+            },
+            dispose() {},
+          },
+        };
+      },
+    },
+    entryPath: "/tmp/fake-pi-entry.js",
+  };
+
+  try {
+    const session = await host.createPiSession("ses_001", tempDir);
+
+    assert.equal(session.kind, "pi");
+    assert.deepEqual(createOptions.tools, ["read", "bash", "edit", "write"]);
+    assert.equal(Object.hasOwn(createOptions, "noTools"), false);
+    assert.equal(resourceOptions.noExtensions, true);
+    assert.equal(resourceOptions.noSkills, true);
+    assert.equal(resourceOptions.noPromptTemplates, true);
+    assert.equal(resourceOptions.noThemes, true);
+    assert.equal(resourceOptions.noContextFiles, true);
+    assert.equal(resourceOptions.extensionFactories.length, 1);
+  } finally {
+    if (previousAgentDir === undefined) {
+      delete process.env.AGENTMAC_PI_AGENT_DIR;
+    } else {
+      process.env.AGENTMAC_PI_AGENT_DIR = previousAgentDir;
+    }
+  }
+});
+
+test("Pi tool_call approval hook allows approved built-in tool calls", async () => {
+  const host = createInProcessRuntimeHost();
+  assert.deepEqual(host.toolApprovalRequestFromEvent({
+    type: "tool_call",
+    toolName: "read",
+    toolCallId: "call_read",
+    input: {
+      path: "README.md",
+      offset: 10,
+      limit: 20,
+    },
+  }), {
+    toolCallId: "call_read",
+    toolName: "read",
+    risk: "edit",
+    summary: "Read file",
+    details: {
+      path: "README.md",
+      offset: 10,
+      limit: 20,
+    },
+  });
+
+  host.sessions.set("ses_001", {
+    kind: "pi",
+    id: "ses_001",
+    activeReplyTo: "cmd_send",
+    pendingToolApprovals: new Map(),
+  });
+
+  const handlers = new Map();
+  await host.createToolApprovalExtensionFactory("ses_001")({
+    on(eventName, handler) {
+      handlers.set(eventName, handler);
+    },
+  });
+
+  const approval = handlers.get("tool_call")({
+    type: "tool_call",
+    toolName: "bash",
+    toolCallId: "call_bash",
+    input: {
+      command: "pwd",
+      timeout: 3,
+    },
+  });
+
+  assert.deepEqual(host.events.shift(), {
+    type: "event",
+    id: "evt_001",
+    replyTo: "cmd_send",
+    sessionId: "ses_001",
+    name: "toolApprovalRequested",
+    payload: {
+      toolCallId: "call_bash",
+      toolName: "bash",
+      risk: "shell",
+      summary: "Run shell command",
+      details: {
+        command: "pwd",
+        timeout: 3,
+      },
+    },
+  });
+
+  await host.approveToolCall({
+    id: "cmd_approve",
+    payload: {
+      sessionId: "ses_001",
+      toolCallId: "call_bash",
+      decision: "approved",
+      reason: "Allowed in test.",
+    },
+  });
+
+  assert.deepEqual(host.events.shift(), {
+    type: "event",
+    id: "evt_002",
+    replyTo: "cmd_approve",
+    sessionId: "ses_001",
+    name: "toolApprovalResolved",
+    payload: {
+      toolCallId: "call_bash",
+      decision: "approved",
+    },
+  });
+  assert.equal(await approval, undefined);
+});
+
+test("Pi tool_call approval hook blocks denied file writes", async () => {
+  const host = createInProcessRuntimeHost();
+  host.sessions.set("ses_001", {
+    kind: "pi",
+    id: "ses_001",
+    activeReplyTo: "cmd_send",
+    pendingToolApprovals: new Map(),
+  });
+
+  const approval = host.handlePiToolCallApproval("ses_001", {
+    type: "tool_call",
+    toolName: "write",
+    toolCallId: "call_write",
+    input: {
+      path: "Sources/App.swift",
+      content: "x".repeat(1200),
+    },
+  });
+
+  const request = host.events.shift();
+  assert.equal(request.name, "toolApprovalRequested");
+  assert.equal(request.payload.toolCallId, "call_write");
+  assert.equal(request.payload.toolName, "write");
+  assert.equal(request.payload.risk, "write");
+  assert.equal(request.payload.summary, "Write file");
+  assert.equal(request.payload.details.path, "Sources/App.swift");
+  assert.equal(request.payload.details.contentLength, 1200);
+  assert.equal(request.payload.details.contentPreview.length, 1003);
+
+  await host.approveToolCall({
+    id: "cmd_deny",
+    payload: {
+      sessionId: "ses_001",
+      toolCallId: "call_write",
+      decision: "denied",
+      reason: "Denied in test.",
+    },
+  });
+
+  assert.deepEqual(await approval, {
+    block: true,
+    reason: "Denied in test.",
+  });
+});
+
+test("Pi non-text progress emits runtime activity events", () => {
+  const host = createInProcessRuntimeHost();
+  const session = {
+    kind: "pi",
+    id: "ses_001",
+    activeReplyTo: "cmd_send",
+    pendingToolApprovals: new Map(),
+  };
+
+  host.handlePiEvent(session, {
+    type: "message_update",
+    assistantMessageEvent: {
+      type: "toolcall_delta",
+    },
+  });
+  host.handlePiEvent(session, {
+    type: "tool_execution_start",
+    toolCallId: "call_edit",
+    toolName: "edit",
+    args: {
+      path: "Sources/App.swift",
+    },
+  });
+
+  assert.deepEqual(host.events, [
+    {
+      type: "event",
+      id: "evt_001",
+      replyTo: "cmd_send",
+      sessionId: "ses_001",
+      name: "runtimeActivity",
+      payload: {
+        piEventType: "message_update",
+        assistantEventType: "toolcall_delta",
+      },
+    },
+    {
+      type: "event",
+      id: "evt_002",
+      replyTo: "cmd_send",
+      sessionId: "ses_001",
+      name: "runtimeActivity",
+      payload: {
+        piEventType: "tool_execution_start",
+        toolCallId: "call_edit",
+        toolName: "edit",
+      },
+    },
+  ]);
+});
+
 test("abortSession removes pi session even when Pi abort throws", async () => {
   const events = [];
   let disposed = false;
@@ -566,4 +814,21 @@ function realPiRuntimeSkipReason() {
     return "vendored Pi runtime is not installed";
   }
   return false;
+}
+
+function createInProcessRuntimeHost() {
+  const events = [];
+  const host = new RuntimeHost({
+    input: {},
+    output: {
+      write(line) {
+        events.push(JSON.parse(line));
+      },
+    },
+    error: {
+      write() {},
+    },
+  });
+  host.events = events;
+  return host;
 }

@@ -86,6 +86,18 @@ nonisolated struct AppResourceSummary: Equatable, Identifiable, Sendable {
     var isValid: Bool {
         validationMessages.isEmpty
     }
+
+    /// 写入 `agent.yaml` 时使用的共享资源引用路径。
+    ///
+    /// `ResourceLibrary` 对 UI 暴露 app data 相对路径，Agent manifest 持久化时需要保存为相对
+    /// `agents/<agent-id>/agent.yaml` 所在目录的路径。
+    var agentManifestReference: String {
+        let trimmedPath = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmedPath.hasPrefix("../") {
+            return trimmedPath
+        }
+        return "../../\(trimmedPath)"
+    }
 }
 
 /// AppShell Resource 编辑区使用的文档模型。
