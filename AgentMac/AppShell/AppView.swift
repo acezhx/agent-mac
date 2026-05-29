@@ -37,6 +37,13 @@ struct AppView: View {
                                 Label("Resource Library", systemImage: AppWindowID.resourceLibrary.systemImage)
                             }
                             .help("Resource Library")
+
+                            Button {
+                                openWindow(id: AppWindowID.settings.rawValue)
+                            } label: {
+                                Label("Settings", systemImage: AppWindowID.settings.systemImage)
+                            }
+                            .help("Settings")
                         }
                     }
             }

@@ -152,8 +152,8 @@ AGENTMAC_PI_AGENT_DIR
 ~/Library/Application Support/AgentMac/Pi/auth.json
 ```
 
-这只用于本机端到端验证固定 coding agent 主链路。`auth.json` 中的明文模型 key 是临时方案，
-不要提交到仓库；正式版本应迁移到 Keychain 或设置 UI 管理。
+Settings 页面当前会把 API Key 凭据写入 `auth.json`，供 Pi coding agent 读取。该文件不应提交到
+仓库；后续正式凭据管理可迁移到 Keychain 或补充 OAuth/订阅授权流程。
 
 开发或自动化测试可以临时覆盖 Pi SDK 入口：
 

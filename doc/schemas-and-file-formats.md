@@ -365,8 +365,13 @@ Agent 或 Runtime 消费 tool 配置前还应校验：
 ```yaml
 appDataVersion: 1
 lastWorkspace: null
+
 runtime:
   useBundledRuntime: true
+
+agent:
+  allowedModelProviders:
+    - openai
 ```
 
 ### 字段
@@ -376,9 +381,69 @@ runtime:
 | `appDataVersion` | integer | 是 | `1` | 用户数据布局版本。 |
 | `lastWorkspace` | string/null | 否 | `null` | 上次选择的 workspace。 |
 | `runtime.useBundledRuntime` | bool | 否 | `true` | 是否使用 app 内置 runtime。 |
+| `agent.allowedModelProviders` | string[] | 否 | `["openai"]` | Agent 编辑和运行允许选择的模型 provider 列表。 |
 
 运行时模式可以被 Xcode scheme 或进程环境变量覆盖。优先级见
 `doc/runtime-packaging.md`，不要把开发机专用路径写入 `settings.yaml`。
+
+`agent.allowedModelProviders` 是 app 级 provider 白名单，不保存具体模型名。Agent 自身仍在
+各自的 `agent.yaml` 中保存 `model.provider` 和 `model.name`。
+
+## Pi/auth.json
+
+`Pi/auth.json` 保存 Pi coding agent 读取的 provider 授权凭据。AgentMac 第一版只通过 Settings
+页面写入 API Key 凭据；OAuth/订阅凭据如果已由 Pi 写入，会被保留但不会由 AgentMac 创建或刷新。
+
+位置：
+
+```text
+~/Library/Application Support/AgentMac/Pi/auth.json
+```
+
+### API Key 示例
+
+```json
+{
+  "deepseek": {
+    "type": "api_key",
+    "key": "sk-..."
+  }
+}
+```
+
+### 字段
+
+顶层 key 是 Pi provider ID。当前 Settings 页面支持以下 provider：
+
+```text
+anthropic
+deepseek
+google
+kimi-coding
+minimax
+minimax-cn
+moonshotai
+moonshotai-cn
+openai-codex
+xai
+xiaomi
+xiaomi-token-plan-ams
+xiaomi-token-plan-cn
+xiaomi-token-plan-sgp
+```
+
+API Key 凭据字段：
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---:|---|
+| `type` | string | 是 | API Key 凭据固定为 `api_key`。 |
+| `key` | string | 是 | Provider API Key。 |
+
+Settings 页面保存 API Key 后，会把对应 provider 写入 `agent.allowedModelProviders`。断开 API Key
+会删除对应 provider 的凭据，并从 `agent.allowedModelProviders` 移除。`openai-codex` 当前只展示在
+OAuth/订阅分组中，第一版不提供 API Key 表单。
+
+`auth.json` 当前由 AgentMac 写入为本机文件，并设置为 owner read/write 权限。该文件不能提交到仓库。
 
 ## ResolvedAgentConfig
 

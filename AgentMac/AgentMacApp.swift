@@ -19,6 +19,9 @@ struct AgentMacApp: App {
     private let resourceStore = Store(initialState: ResourceFeature.State()) {
         ResourceFeature()
     }
+    private let settingsStore = Store(initialState: SettingsFeature.State()) {
+        SettingsFeature()
+    }
 
     var body: some Scene {
         WindowGroup {
@@ -36,5 +39,11 @@ struct AgentMacApp: App {
                 .frame(minWidth: 980, minHeight: 620)
         }
         .defaultSize(width: 1080, height: 680)
+
+        Window(AppWindowID.settings.title, id: AppWindowID.settings.rawValue) {
+            SettingsView(store: settingsStore)
+                .frame(minWidth: 520, minHeight: 420)
+        }
+        .defaultSize(width: 560, height: 480)
     }
 }

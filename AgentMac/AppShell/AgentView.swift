@@ -195,11 +195,15 @@ private struct AgentEditorView: View {
 
                         formSection(title: "Model") {
                             LabeledContent("Provider") {
-                                TextField(
-                                    "openai",
-                                    text: $store.editorModelProvider.sending(\.editorModelProviderChanged)
-                                )
-                                .textFieldStyle(.roundedBorder)
+                                Picker(
+                                    "Provider",
+                                    selection: $store.editorModelProvider.sending(\.editorModelProviderChanged)
+                                ) {
+                                    ForEach(store.allowedModelProviders, id: \.self) { provider in
+                                        Text(provider).tag(provider)
+                                    }
+                                }
+                                .labelsHidden()
                             }
 
                             LabeledContent("Name") {
@@ -208,6 +212,12 @@ private struct AgentEditorView: View {
                                     text: $store.editorModelName.sending(\.editorModelNameChanged)
                                 )
                                 .textFieldStyle(.roundedBorder)
+                            }
+
+                            if !store.isEditorModelProviderAllowed {
+                                Text("Provider is not allowed in Settings.")
+                                    .font(.caption)
+                                    .foregroundStyle(.red)
                             }
                         }
 

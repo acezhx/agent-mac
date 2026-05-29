@@ -164,8 +164,18 @@ extension FileStoreError: LocalizedError {
 nonisolated struct FileStore {
     /// 新数据目录中默认创建的 `settings.yaml` 内容。
     ///
-    /// 第一版只写入应用数据版本号。重复初始化不会覆盖用户已修改或后续模块已扩展的设置文件。
-    static let defaultSettingsYAML = "appDataVersion: 1\n"
+    /// 默认内容写入当前 app data 版本号和 app 级默认设置。重复初始化不会覆盖用户已修改或后续模块已扩展的设置文件。
+    static let defaultSettingsYAML = """
+    appDataVersion: 1
+    lastWorkspace: null
+
+    runtime:
+      useBundledRuntime: true
+
+    agent:
+      allowedModelProviders:
+        - "openai"
+    """
 
     /// 当前 FileStore 实例使用的数据目录布局。
     ///

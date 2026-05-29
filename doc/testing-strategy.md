@@ -18,6 +18,7 @@
 适用模块：
 
 - `FileStore`
+- `AppSettings`
 - `ResourceLibrary`
 - `AgentLibrary`
 - `Session`
@@ -27,6 +28,7 @@
 
 - 文件路径解析。
 - 配置读写。
+- app 级设置默认值和 provider 白名单保存。
 - 资源校验。
 - Agent 校验。
 - Session 状态流转。
@@ -140,6 +142,18 @@ node AgentMac/RuntimeHost/runtime-host.js
 xcodebuild test -scheme AgentMac -destination 'platform=macOS'
 ```
 
+### AppSettings
+
+必须自动化覆盖：
+
+- 旧版最小 `settings.yaml` 解码时补齐默认 Agent provider 白名单。
+- `settings.yaml` 编解码能保留 Agent provider 白名单。
+- `AppSettingsStore` 通过 `FileStore` 加载和保存设置。
+- `PiAuthStore` 按 Pi `auth.json` 格式保存 API Key 凭据。
+- `PiAuthStore` 写入和删除单个 provider 凭据时保留其它 provider 的 OAuth 或未知凭据字段。
+
+依赖：使用测试临时目录，不使用真实 Application Support。
+
 ### ResourceLibrary
 
 必须自动化覆盖：
@@ -234,6 +248,7 @@ Pi 会话。
 - Agent 列表加载后保存摘要。
 - 选择 Agent 后加载编辑区字段，并同步已选择的 knowledge、skills、tools。
 - Agent 编辑页加载 ResourceLibrary 中可选的 knowledge、skills、tools。
+- Agent 编辑页加载 Settings 中的模型 provider 白名单，并只允许保存白名单内的 provider。
 - Agent 编辑页勾选或取消勾选资源时更新当前编辑状态。
 - 保存默认 Pi coding agent 时只提交模型配置，并恢复 Pi 自身管理的 system prompt、资源和权限默认值。
 - 创建 Agent 后清空创建表单、选中新 Agent 并更新列表。
@@ -256,6 +271,9 @@ Pi 会话。
 - 删除 tool 时移除列表项并清空编辑区。
 - 保存 Resource 时提交编辑区内容；tool 同时提交 `tool.yaml` 和入口文件内容。
 - Resource 创建、保存和删除失败时清理对应进行中标记并展示错误。
+- Settings 页面加载 Agent provider 白名单和 Pi provider 凭据状态。
+- Settings 页面保存 API Key 后写入凭据，并把 provider 加入 Agent provider 白名单。
+- Settings 页面断开 API Key provider 后删除凭据，并从 Agent provider 白名单移除。
 
 当前测试位置：
 
@@ -265,12 +283,14 @@ AgentMacTests/AppShell/AppFeatureTests.swift
 AgentMacTests/AppShell/AppResourceClientTests.swift
 AgentMacTests/AppShell/AppSessionClientTests.swift
 AgentMacTests/AppShell/ResourceFeatureTests.swift
+AgentMacTests/AppShell/SettingsFeatureTests.swift
 AgentMacTests/AppShell/SessionFeatureTests.swift
+AgentMacTests/AppSettings/AppSettingsTests.swift
 ```
 
-主窗口 toolbar 打开 Agent Library 和 Resource Library 独立窗口属于 SwiftUI scene 编排，第一版通过
+主窗口 toolbar 打开 Agent Library、Resource Library 和 Settings 独立窗口属于 SwiftUI scene 编排，第一版通过
 macOS build 和手工 UI 验收覆盖；窗口内部的业务状态仍由 `AgentFeatureTests` 和
-`ResourceFeatureTests` 覆盖。
+`ResourceFeatureTests`、`SettingsFeatureTests` 覆盖。
 
 手工验收仍覆盖：
 
@@ -283,8 +303,8 @@ macOS build 和手工 UI 验收覆盖；窗口内部的业务状态仍由 `Agent
 
 2026-05-27 已用真实 Pi 和本地模型配置从 macOS UI 跑通固定 coding agent chat session。
 本地调试可把 Pi 配置放在 `~/Library/Application Support/AgentMac/Pi/settings.json` 和
-`~/Library/Application Support/AgentMac/Pi/auth.json`；其中明文 key 只允许作为第一阶段本地
-验证手段，不应提交到仓库。
+`~/Library/Application Support/AgentMac/Pi/auth.json`；Settings 页面当前会把 API Key 凭据写入
+`auth.json`，该文件不应提交到仓库。
 
 Agent 管理、资源管理和 Approval UI 分别补 reducer 测试；必要的 UI 自动化按风险后续增加。
 当前 Agent 管理 UI、资源管理 UI 和 Approval 确认路径已有 reducer 测试。

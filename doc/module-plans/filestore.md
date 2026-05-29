@@ -28,7 +28,8 @@ FileStore
   - `library/tools/`
   - `sessions/`
   - `logs/`
-- 初始化 `settings.yaml`，如果文件不存在则创建默认文件。
+- 初始化 `settings.yaml`，如果文件不存在则创建包含 app data 版本、Runtime 默认值和 Agent provider
+  白名单默认值的文件。
 
 ### 文件读写
 

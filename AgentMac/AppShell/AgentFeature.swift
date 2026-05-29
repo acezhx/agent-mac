@@ -43,6 +43,9 @@ struct AgentFeature {
         /// Agent 编辑页可选择的 tool 目录。
         var availableTools: [AppResourceSummary]
 
+        /// Agent 允许使用的模型 provider。
+        var allowedModelProviders: [String]
+
         /// 创建表单中的 Agent ID。
         var newAgentID: String
 
@@ -79,6 +82,9 @@ struct AgentFeature {
         /// 是否正在加载可选资源列表。
         var isLoadingResources: Bool
 
+        /// 是否正在加载应用设置。
+        var isLoadingSettings: Bool
+
         /// 是否正在加载选中 Agent。
         var isLoadingAgent: Bool
 
@@ -96,6 +102,7 @@ struct AgentFeature {
             self.availableKnowledge = []
             self.availableSkills = []
             self.availableTools = []
+            self.allowedModelProviders = AppSettings.defaultAllowedModelProviders
             self.newAgentID = ""
             self.newAgentName = ""
             self.editorName = ""
@@ -108,6 +115,7 @@ struct AgentFeature {
             self.errorMessage = nil
             self.isLoadingList = false
             self.isLoadingResources = false
+            self.isLoadingSettings = false
             self.isLoadingAgent = false
             self.isCreatingAgent = false
             self.isSavingAgent = false
@@ -115,7 +123,7 @@ struct AgentFeature {
 
         /// 是否有 Agent 操作正在运行。
         var hasOperationInFlight: Bool {
-            isLoadingList || isLoadingResources || isLoadingAgent || isCreatingAgent || isSavingAgent
+            isLoadingList || isLoadingResources || isLoadingSettings || isLoadingAgent || isCreatingAgent || isSavingAgent
         }
 
         /// 是否可以创建 Agent。
@@ -131,8 +139,15 @@ struct AgentFeature {
                 && !hasOperationInFlight
                 && (isEditingDefaultCodingAgent
                     || !editorName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                && isEditorModelProviderAllowed
                 && !editorModelProvider.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 && !editorModelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+
+        /// 当前编辑区模型 provider 是否在应用设置允许列表中。
+        var isEditorModelProviderAllowed: Bool {
+            let provider = editorModelProvider.trimmingCharacters(in: .whitespacesAndNewlines)
+            return !provider.isEmpty && allowedModelProviders.contains(provider)
         }
 
         /// 当前编辑对象是否为内置 Pi coding agent。
@@ -188,6 +203,13 @@ struct AgentFeature {
             availableKnowledge = options.knowledge
             availableSkills = options.skills
             availableTools = options.tools
+        }
+
+        /// 用应用设置填充 Agent 编辑页使用的配置项。
+        ///
+        /// - Parameter settings: 应用设置。
+        mutating func populateSettings(_ settings: AppSettings) {
+            allowedModelProviders = settings.agent.allowedModelProviders
         }
 
         /// 生成可保存的 Agent 编辑模型。
@@ -283,6 +305,12 @@ struct AgentFeature {
         /// 可选资源列表加载失败。
         case loadResourceOptionsFailed(AppResourceClientError)
 
+        /// 应用设置加载成功。
+        case loadSettingsSucceeded(AppSettings)
+
+        /// 应用设置加载失败。
+        case loadSettingsFailed(AppSettingsClientError)
+
         /// 用户选择 Agent。
         case agentSelected(String?)
 
@@ -344,6 +372,7 @@ struct AgentFeature {
             case .task, .refreshButtonTapped:
                 state.isLoadingList = true
                 state.isLoadingResources = true
+                state.isLoadingSettings = true
                 state.errorMessage = nil
                 return loadPageDataEffect()
 
@@ -369,6 +398,16 @@ struct AgentFeature {
 
             case let .loadResourceOptionsFailed(error):
                 state.isLoadingResources = false
+                state.errorMessage = error.message
+                return .none
+
+            case let .loadSettingsSucceeded(settings):
+                state.isLoadingSettings = false
+                state.populateSettings(settings)
+                return .none
+
+            case let .loadSettingsFailed(error):
+                state.isLoadingSettings = false
                 state.errorMessage = error.message
                 return .none
 
@@ -490,6 +529,7 @@ struct AgentFeature {
     private func loadPageDataEffect() -> Effect<Action> {
         @Dependency(AppAgentClient.self) var appAgentClient
         @Dependency(AppResourceClient.self) var appResourceClient
+        @Dependency(AppSettingsClient.self) var appSettingsClient
         return .run { send in
             do {
                 let agents = try await appAgentClient.listAgents()
@@ -507,6 +547,13 @@ struct AgentFeature {
                 await send(.loadResourceOptionsSucceeded(options))
             } catch {
                 await send(.loadResourceOptionsFailed(AppResourceClientError(error)))
+            }
+
+            do {
+                let settings = try await appSettingsClient.loadSettings()
+                await send(.loadSettingsSucceeded(settings))
+            } catch {
+                await send(.loadSettingsFailed(AppSettingsClientError(error)))
             }
         }
         .cancellable(id: CancelID.pageData, cancelInFlight: true)

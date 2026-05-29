@@ -9,6 +9,9 @@ nonisolated enum AppWindowID: String, Hashable {
     /// Resource 管理窗口。
     case resourceLibrary = "resource-library"
 
+    /// Settings 窗口。
+    case settings = "settings"
+
     /// 窗口标题。
     var title: String {
         switch self {
@@ -16,6 +19,8 @@ nonisolated enum AppWindowID: String, Hashable {
             "Agent Library"
         case .resourceLibrary:
             "Resource Library"
+        case .settings:
+            "Settings"
         }
     }
 
@@ -26,6 +31,8 @@ nonisolated enum AppWindowID: String, Hashable {
             "person.crop.circle"
         case .resourceLibrary:
             "folder"
+        case .settings:
+            "gearshape"
         }
     }
 }

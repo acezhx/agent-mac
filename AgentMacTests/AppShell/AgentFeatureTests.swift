@@ -24,6 +24,7 @@ struct AgentFeatureTests {
                 makeResourceSummary(kind: .tool, id: "ticket-search", name: "Ticket Search", path: "library/tools/ticket-search"),
             ]
         )
+        let settings = AppSettings(agent: AgentAppSettings(allowedModelProviders: ["openai", "deepseek"]))
         #expect(resourceOptions.knowledge[0].agentManifestReference == "../../library/knowledge/refund.md")
         #expect(resourceOptions.skills[0].agentManifestReference == "../../library/skills/report-writing")
         #expect(resourceOptions.tools[0].agentManifestReference == "../../library/tools/ticket-search")
@@ -36,11 +37,13 @@ struct AgentFeatureTests {
                 }
             )
             $0.appResourceClient = makeResourceClient(options: resourceOptions)
+            $0.appSettingsClient = makeSettingsClient(settings: settings)
         }
 
         await store.send(.task) {
             $0.isLoadingList = true
             $0.isLoadingResources = true
+            $0.isLoadingSettings = true
             $0.errorMessage = nil
         }
         await store.receive(.loadAgentsSucceeded(summaries)) {
@@ -52,6 +55,10 @@ struct AgentFeatureTests {
             $0.availableKnowledge = resourceOptions.knowledge
             $0.availableSkills = resourceOptions.skills
             $0.availableTools = resourceOptions.tools
+        }
+        await store.receive(.loadSettingsSucceeded(settings)) {
+            $0.isLoadingSettings = false
+            $0.allowedModelProviders = ["openai", "deepseek"]
         }
     }
 
@@ -212,6 +219,7 @@ struct AgentFeatureTests {
         state.editorModelProvider = "deepseek"
         state.editorModelName = "deepseek-v4-flash"
         state.editorSystemPrompt = "Updated"
+        state.allowedModelProviders = ["openai", "deepseek"]
         let store = TestStore(initialState: state) {
             AgentFeature()
         } withDependencies: {
@@ -314,6 +322,7 @@ struct AgentFeatureTests {
         state.editorKnowledgeReferences = ["../../library/knowledge/order-rules.md"]
         state.editorSkillReferences = ["../../library/skills/hidden-skill"]
         state.editorToolReferences = ["../../library/tools/hidden-tool"]
+        state.allowedModelProviders = ["openai", "deepseek"]
         let store = TestStore(initialState: state) {
             AgentFeature()
         } withDependencies: {
@@ -399,6 +408,31 @@ struct AgentFeatureTests {
         }
     }
 
+    /// 验证 Agent 保存会受 Settings 中允许的 provider 限制。
+    @Test func saveAgentRequiresAllowedModelProvider() async {
+        let agent = makeAgent(
+            id: "support-agent",
+            name: "Support",
+            model: ModelConfig(provider: "openai", name: "gpt-5-codex")
+        )
+        var state = AgentFeature.State()
+        state.populateEditor(with: agent)
+        state.editorModelProvider = "deepseek"
+        state.allowedModelProviders = ["openai"]
+        let store = TestStore(initialState: state) {
+            AgentFeature()
+        } withDependencies: {
+            $0.appAgentClient = makeClient(
+                saveAgent: { _ in
+                    Issue.record("Disallowed provider should not be saved.")
+                    return agent
+                }
+            )
+        }
+
+        await store.send(.saveAgentButtonTapped)
+    }
+
     private func makeClient(
         listAgents: @escaping @Sendable () async throws -> [AgentSummary] = {
             throw AppAgentClientError("Unexpected listAgents call.")
@@ -466,6 +500,17 @@ struct AgentFeatureTests {
             path: path,
             detail: detail ?? path,
             validationMessages: validationMessages
+        )
+    }
+
+    private func makeSettingsClient(settings: AppSettings = .default) -> AppSettingsClient {
+        AppSettingsClient(
+            loadSettings: {
+                settings
+            },
+            saveSettings: { settings in
+                settings
+            }
         )
     }
 

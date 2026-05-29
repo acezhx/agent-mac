@@ -17,6 +17,7 @@
 
 ```text
 FileStore
+-> AppSettings
 -> ResourceLibrary
 -> AgentLibrary
 -> RuntimeHost
@@ -42,6 +43,7 @@ FileStore
 ## 模块明细计划
 
 - [FileStore](module-plans/filestore.md)
+- [AppSettings](module-plans/appsettings.md)
 - [ResourceLibrary](module-plans/resourcelibrary.md)
 - [AgentLibrary](module-plans/agentlibrary.md)
 - [RuntimeHost](module-plans/runtimehost.md)
@@ -69,6 +71,23 @@ FileStore
 - 可以读写文本文件和 YAML 文件。
 - 扫描目录时能列出 Agent 和资源库条目。
 - 传入越界路径时返回错误，不访问目标文件。
+
+## 阶段 1.5：AppSettings
+
+目标：建立 app 级 `settings.yaml` 的模型和读写边界。
+
+开发内容：
+
+- 定义 `settings.yaml` 对应的应用设置模型。
+- 通过 `FileStore` 读取和保存设置。
+- 支持 Agent 可使用的模型 provider 白名单。
+- 缺失字段按默认值兼容旧设置文件。
+
+验收标准：
+
+- 可以加载默认或旧版 `settings.yaml`。
+- 可以保存 Agent provider 白名单。
+- 上层 AppShell 通过 TCA dependency 访问设置，不直接读写文件。
 
 ## 阶段 2：ResourceLibrary
 
@@ -195,11 +214,12 @@ FileStore
 
 - 创建根 `AppFeature`。
 - 将 Agent 管理、资源管理、会话页面拆成 TCA 子 Feature。
-- 通过 TCA dependency 接入 `AgentLibrary`、`ResourceLibrary` 和 `Session`。
+- 通过 TCA dependency 接入 `AgentLibrary`、`ResourceLibrary`、`AppSettings` 和 `Session`。
 - App 根视图和导航。
 - Agent 列表。
 - Agent 创建入口。
 - Agent 编辑页。
+- Settings 页面。
 - system prompt 编辑器。
 - knowledge、skills、tools 资源选择。
 - 会话页面。
@@ -213,6 +233,7 @@ FileStore
 - SwiftUI View 不直接调用底层服务模块。
 - 用户可以创建 Agent。
 - 用户可以编辑 Agent 的 system prompt。
+- 用户可以在 Settings 中配置 Agent 可使用的模型 provider。
 - 用户可以选择 knowledge、skills、tools。
 - 用户可以选择一个 Agent 启动会话。
 - 用户可以从 macOS UI 发送消息。
