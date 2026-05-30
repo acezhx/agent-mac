@@ -20,7 +20,7 @@ nonisolated enum DefaultCodingAgentTemplate {
 
     /// 默认 Pi coding agent 的 system prompt。
     ///
-    /// 该 Agent 的提示词和工具权限由 Pi coding agent 自身提供，AgentMac 只持久化模型配置。
+    /// 该 Agent 的提示词、工具和权限由 Pi coding agent 自身提供，AgentMac 只额外持久化用户选择的 skills。
     static let systemPrompt = ""
 }
 

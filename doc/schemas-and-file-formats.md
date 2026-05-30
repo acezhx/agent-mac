@@ -123,6 +123,10 @@ permissions:
 | `permissions.edit` | enum | 否 | `ask` | 文件编辑策略。 |
 | `permissions.network` | enum | 否 | `ask` | 网络访问策略。 |
 
+保留 ID `coding-agent` 表示内置 Pi coding agent。它仍使用同一个 `agent.yaml` 格式保存，但运行时只读取
+`skills` 字段；`name`、`model`、`systemPrompt`、`knowledge`、`tools` 和 `permissions` 保持 Pi coding
+agent 默认行为。
+
 权限枚举：
 
 ```text

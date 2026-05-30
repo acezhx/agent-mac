@@ -25,7 +25,8 @@ struct SessionTests {
 
         #expect(session.state == .running)
         #expect(session.runtimeSessionID == "ses_mock")
-        #expect(runtime.startedWorkspacePaths == [root.appending(path: "workspace", directoryHint: .isDirectory).path])
+        #expect(runtime.startedAgentConfigs.map(\.id) == ["support-agent"])
+        #expect(runtime.startedAgentConfigs.map(\.workspacePath) == [root.appending(path: "workspace", directoryHint: .isDirectory).path])
 
         let record = try readRecord(store: store, path: session.recordRelativePath)
         #expect(record["state"] as? String == "running")
@@ -50,7 +51,7 @@ struct SessionTests {
         }
 
         #expect(session.state == .running)
-        #expect(runtime.startedWorkspacePaths.count == 1)
+        #expect(runtime.startedAgentConfigs.count == 1)
     }
 
     /// 验证用户消息会追加，assistant delta 会合并成一条完成的 assistant 消息。
@@ -169,6 +170,61 @@ struct SessionTests {
         let record = try readRecord(store: store, path: session.recordRelativePath)
         #expect(record["state"] as? String == "running")
         #expect(record["messageCount"] as? Int == 2)
+    }
+
+    /// 验证取消当前轮会保留 Runtime session，并允许后续继续发送。
+    @Test func turnCancelledKeepsRuntimeSessionReusable() throws {
+        let runtime = MockSessionRuntime()
+        runtime.sendEvents = [
+            runtimeEvent(name: "assistantDelta", payload: .object(["text": .string("partial")])),
+            runtimeEvent(name: "turnCancelled", payload: .object(["cancelled": .bool(true)])),
+        ]
+        let (session, store, root, _) = try makeSession(runtime: runtime)
+        defer { removeTemporaryRoot(root) }
+
+        try session.start()
+        try session.sendUserMessage("stop")
+
+        #expect(session.state == .idle)
+        #expect(session.runtimeSessionID == "ses_mock")
+        #expect(session.messages.map(\.role) == [.user, .assistant])
+        #expect(session.messages[1].content == "partial")
+        #expect(session.messages[1].isStreaming == false)
+
+        runtime.sendEvents = [
+            runtimeEvent(name: "assistantDelta", payload: .object(["text": .string("next")])),
+            runtimeEvent(name: "messageCompleted"),
+        ]
+        try session.sendUserMessage("again")
+
+        #expect(session.state == .idle)
+        #expect(session.runtimeSessionID == "ses_mock")
+        #expect(runtime.sentMessages.map { $0.1 } == ["stop", "again"])
+        #expect(session.messages.map(\.content) == ["stop", "partial", "again", "next"])
+
+        let record = try readRecord(store: store, path: session.recordRelativePath)
+        #expect(record["state"] as? String == "idle")
+        #expect(record["runtimeSessionID"] as? String == "ses_mock")
+    }
+
+    /// 验证 cancelCurrentTurn 调用 RuntimeBridge cancelTurn，不进入 aborted 终态。
+    @Test func cancelCurrentTurnCallsRuntimeCancelAndReturnsToIdle() throws {
+        let runtime = MockSessionRuntime()
+        runtime.sendEvents = [
+            runtimeEvent(name: "assistantDelta", payload: .object(["text": .string("partial")])),
+        ]
+        let (session, _, root, _) = try makeSession(runtime: runtime)
+        defer { removeTemporaryRoot(root) }
+
+        try session.start()
+        try session.sendUserMessage("stop")
+        try session.cancelCurrentTurn()
+
+        #expect(runtime.cancelledTurnSessionIDs == ["ses_mock"])
+        #expect(runtime.abortedSessionIDs.isEmpty)
+        #expect(session.state == .idle)
+        #expect(session.runtimeSessionID == "ses_mock")
+        #expect(session.messages[1].isStreaming == false)
     }
 
     /// 验证 RuntimeBridge 错误会让 session 进入 failed，并保留诊断消息。
@@ -313,7 +369,7 @@ struct SessionTests {
         try session.start()
 
         #expect(runtime.sentMessages.isEmpty)
-        #expect(runtime.startedWorkspacePaths.count == 2)
+        #expect(runtime.startedAgentConfigs.count == 2)
         #expect(session.state == .running)
     }
 
@@ -411,6 +467,39 @@ struct SessionTests {
         #expect(session.messages.contains { $0.role == .diagnostic && $0.content.contains("bash") })
         #expect(session.messages.last?.role == .assistant)
         #expect(session.messages.last?.content == "done")
+    }
+
+    /// 验证工具诊断消息切分 assistant 输出后，完成事件会清理所有 streaming 标记。
+    @Test func messageCompletedClearsStreamingAssistantSplitByToolDiagnostics() throws {
+        let runtime = MockSessionRuntime()
+        runtime.sendEvents = [
+            runtimeEvent(
+                name: "assistantDelta",
+                payload: .object(["text": .string("现在让我看看各章节的具体内容结构：")])
+            ),
+            runtimeEvent(
+                name: "toolApprovalRequested",
+                payload: .object([
+                    "toolCallId": .string("tool_001"),
+                    "toolName": .string("read"),
+                    "risk": .string("read"),
+                    "summary": .string("Read project files"),
+                ])
+            ),
+            runtimeEvent(name: "assistantDelta", payload: .object(["text": .string("项目整体分析")])),
+            runtimeEvent(name: "messageCompleted"),
+        ]
+        let (session, _, root, _) = try makeSession(runtime: runtime)
+        defer { removeTemporaryRoot(root) }
+
+        try session.start()
+        try session.sendUserMessage("分析下当前的项目")
+
+        #expect(session.state == .idle)
+        #expect(session.messages.map(\.role) == [.user, .assistant, .diagnostic, .assistant])
+        #expect(session.messages[1].content == "现在让我看看各章节的具体内容结构：")
+        #expect(session.messages[3].content == "项目整体分析")
+        #expect(session.messages.filter(\.isStreaming).isEmpty)
     }
 
     /// 验证默认策略会自动批准非删除文件的 bash 请求，不进入交互式审批。
@@ -837,8 +926,11 @@ private final class MockSessionRuntime: SessionRuntimeBridging {
     /// abortSession 抛出的错误。
     var abortError: Error?
 
-    /// startSession 收到的 workspace paths。
-    private(set) var startedWorkspacePaths: [String?] = []
+    /// cancelTurn 抛出的错误。
+    var cancelTurnError: Error?
+
+    /// startSession 收到的 Agent 运行配置。
+    private(set) var startedAgentConfigs: [ResolvedAgentConfig] = []
 
     /// sendMessage 收到的消息。
     private(set) var sentMessages: [(String, String)] = []
@@ -846,21 +938,24 @@ private final class MockSessionRuntime: SessionRuntimeBridging {
     /// abortSession 收到的 session ids。
     private(set) var abortedSessionIDs: [String] = []
 
+    /// cancelTurn 收到的 session ids。
+    private(set) var cancelledTurnSessionIDs: [String] = []
+
     /// approveToolCall 收到的回传记录。
     private(set) var approvedToolCalls: [ApprovedToolCall] = []
 
     /// 启动 mock Runtime Host session。
     ///
     /// - Parameters:
-    ///   - workspacePath: 会话工作目录。
+    ///   - agentConfig: 已解析的 Agent 运行配置。
     ///   - timeout: 等待秒数。
     /// - Returns: mock session id。
-    func startSession(workspacePath: String?, timeout: TimeInterval) throws -> String {
+    func startSession(agentConfig: ResolvedAgentConfig, timeout: TimeInterval) throws -> String {
         if let startError {
             throw startError
         }
 
-        startedWorkspacePaths.append(workspacePath)
+        startedAgentConfigs.append(agentConfig)
         return startResult
     }
 
@@ -911,6 +1006,29 @@ private final class MockSessionRuntime: SessionRuntimeBridging {
             sessionId: sessionId,
             name: "sessionAborted",
             payload: .object([:])
+        )
+    }
+
+    /// 记录取消当前轮请求。
+    ///
+    /// - Parameters:
+    ///   - sessionId: Runtime Host session id。
+    ///   - timeout: 等待秒数。
+    /// - Returns: turnCancelled event。
+    @discardableResult
+    func cancelTurn(sessionId: String, timeout: TimeInterval) throws -> RuntimeEvent {
+        if let cancelTurnError {
+            throw cancelTurnError
+        }
+
+        cancelledTurnSessionIDs.append(sessionId)
+        return RuntimeEvent(
+            type: "event",
+            id: "evt_turnCancelled",
+            replyTo: "cmd_mock_cancel",
+            sessionId: sessionId,
+            name: "turnCancelled",
+            payload: .object(["cancelled": .bool(true)])
         )
     }
 

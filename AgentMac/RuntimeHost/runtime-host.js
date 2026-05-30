@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 const readline = require("node:readline");
-const { existsSync } = require("node:fs");
+const { existsSync, readFileSync } = require("node:fs");
 const { mkdir } = require("node:fs/promises");
 const os = require("node:os");
 const path = require("node:path");
@@ -105,7 +105,7 @@ class RuntimeHost {
       return;
     }
 
-    if (command.name === "approveToolCall") {
+    if (command.name === "approveToolCall" || command.name === "cancelTurn") {
       void this.handleCommand(command).catch((error) => {
         this.writeError(command.id, "internal_error", "RuntimeHost command failed.", true, {
           reason: formatErrorMessage(error),
@@ -155,6 +155,9 @@ class RuntimeHost {
       case "abortSession":
         await this.abortSession(command);
         break;
+      case "cancelTurn":
+        await this.cancelTurn(command);
+        break;
       case "approveToolCall":
         await this.approveToolCall(command);
         break;
@@ -169,18 +172,29 @@ class RuntimeHost {
   }
 
   /**
-   * 创建固定 Pi coding agent session。
+   * 创建 RuntimeHost session。
    *
    * @param {{ id: string, payload?: object }} command startSession command。
    */
   async startSession(command) {
     const payload = command.payload ?? {};
-    const agent = payload.agent;
-    if (!isPlainObject(agent) || agent.mode !== "fixedCodingAgent") {
+    const parsedAgent = parseStartSessionAgent(payload.agent);
+    if (parsedAgent.error) {
       this.writeError(
         command.id,
         "invalid_command",
-        'startSession requires payload.agent.mode to be "fixedCodingAgent".',
+        parsedAgent.error,
+        true,
+      );
+      return;
+    }
+
+    const agent = parsedAgent.agent;
+    if (agent.mode === "resolved" && agent.toolPaths.length > 0) {
+      this.writeError(
+        command.id,
+        "unsupported_feature",
+        "Custom Agent tools are not supported by RuntimeHost yet.",
         true,
       );
       return;
@@ -189,8 +203,8 @@ class RuntimeHost {
     const sessionId = this.nextSessionId();
     const workspacePath = typeof payload.workspacePath === "string" ? payload.workspacePath : null;
     const session = this.runtimeMode === "mock"
-      ? this.createMockSession(sessionId, workspacePath)
-      : await this.createPiSession(sessionId, workspacePath);
+      ? this.createMockSession(sessionId, workspacePath, agent)
+      : await this.createPiSession(sessionId, workspacePath, agent);
 
     this.sessions.set(sessionId, session);
 
@@ -252,11 +266,6 @@ class RuntimeHost {
     }
 
     const session = this.sessions.get(sessionId);
-    if (session.kind === "mock") {
-      await this.sendMockMessage(command.id, session, message.content);
-      return;
-    }
-
     if (session.activeReplyTo) {
       this.writeError(command.id, "runtime_failed", "Session is already processing a message.", true);
       return;
@@ -266,7 +275,11 @@ class RuntimeHost {
     session.completed = false;
     session.seenTextDelta = false;
     try {
-      await session.piSession.sendUserMessage(message.content);
+      if (session.kind === "mock") {
+        await this.sendMockMessage(command.id, session, message.content);
+      } else {
+        await session.piSession.sendUserMessage(message.content);
+      }
       if (!session.completed) {
         this.writeEvent({
           replyTo: command.id,
@@ -289,6 +302,55 @@ class RuntimeHost {
     } finally {
       session.activeReplyTo = null;
     }
+  }
+
+  /**
+   * 取消当前正在运行的一轮消息，但保留 Runtime Host session。
+   *
+   * @param {{ id: string, payload?: object }} command cancelTurn command。
+   */
+  async cancelTurn(command) {
+    const payload = command.payload ?? {};
+    const sessionId = typeof payload.sessionId === "string" ? payload.sessionId : null;
+    if (!sessionId || !this.sessions.has(sessionId)) {
+      this.writeError(command.id, "missing_session", "Session not found.", true);
+      return;
+    }
+
+    const session = this.sessions.get(sessionId);
+    const activeReplyTo = session.activeReplyTo;
+    if (!activeReplyTo) {
+      this.writeEvent({
+        replyTo: command.id,
+        sessionId,
+        name: "turnCancelled",
+        payload: { cancelled: false },
+      });
+      return;
+    }
+
+    session.completed = true;
+    this.rejectPendingToolApprovals(session, "Current turn was cancelled.");
+    if (session.kind === "pi") {
+      try {
+        await session.piSession.abort();
+      } catch (error) {
+        this.log(`Pi turn cancel failed: ${formatErrorMessage(error)}`);
+      }
+    }
+
+    this.writeEvent({
+      replyTo: activeReplyTo,
+      sessionId,
+      name: "turnCancelled",
+      payload: { cancelled: true },
+    });
+    this.writeEvent({
+      replyTo: command.id,
+      sessionId,
+      name: "turnCancelled",
+      payload: { cancelled: true },
+    });
   }
 
   /**
@@ -336,13 +398,15 @@ class RuntimeHost {
    *
    * @param {string} sessionId RuntimeHost session id。
    * @param {string|null} workspacePath 工作目录。
+   * @param {object} agent RuntimeHost 解析后的 Agent 配置。
    * @returns {object} mock session。
    */
-  createMockSession(sessionId, workspacePath) {
+  createMockSession(sessionId, workspacePath, agent = { mode: "fixedCodingAgent", skillPaths: [] }) {
     return {
       kind: "mock",
       id: sessionId,
       workspacePath,
+      agent,
       pendingToolApprovals: new Map(),
     };
   }
@@ -352,9 +416,10 @@ class RuntimeHost {
    *
    * @param {string} sessionId RuntimeHost session id。
    * @param {string|null} workspacePath 工作目录。
+   * @param {object} agent RuntimeHost 解析后的 Agent 配置。
    * @returns {Promise<object>} RuntimeHost 内部 session 状态。
    */
-  async createPiSession(sessionId, workspacePath) {
+  async createPiSession(sessionId, workspacePath, agent = { mode: "fixedCodingAgent", skillPaths: [] }) {
     const piRuntime = await this.loadPiRuntime();
     const cwd = workspacePath ?? process.cwd();
     const agentDir = resolvePiAgentDir();
@@ -369,9 +434,22 @@ class RuntimeHost {
       extensionFactories: [this.createToolApprovalExtensionFactory(sessionId)],
       noExtensions: true,
       noSkills: true,
+      additionalSkillPaths: agent.skillPaths,
       noPromptTemplates: true,
       noThemes: true,
       noContextFiles: true,
+      ...(agent.mode === "resolved"
+        ? {
+            systemPromptOverride: readFileSync(agent.systemPromptPath, "utf-8"),
+            appendSystemPromptOverride: () => [],
+            agentsFilesOverride: () => ({
+              agentsFiles: agent.knowledgePaths.map((filePath) => ({
+                path: filePath,
+                content: readFileSync(filePath, "utf-8"),
+              })),
+            }),
+          }
+        : {}),
     });
     await resourceLoader.reload();
 
@@ -388,6 +466,13 @@ class RuntimeHost {
       createOptions.authStorage = testFaux.authStorage;
       createOptions.modelRegistry = testFaux.modelRegistry;
       createOptions.model = testFaux.model;
+    } else {
+      const requestedModel = this.resolveRequestedModel(piRuntime, agent, agentDir);
+      if (requestedModel) {
+        createOptions.authStorage = requestedModel.authStorage;
+        createOptions.modelRegistry = requestedModel.modelRegistry;
+        createOptions.model = requestedModel.model;
+      }
     }
 
     let result;
@@ -615,6 +700,7 @@ class RuntimeHost {
       "AuthStorage",
       "createAgentSession",
       "DefaultResourceLoader",
+      "ModelRegistry",
       "SessionManager",
       "SettingsManager",
     ]) {
@@ -662,6 +748,42 @@ class RuntimeHost {
   }
 
   /**
+   * 根据 resolved Agent 的模型配置创建 Pi model 相关对象。
+   *
+   * @param {{ module: object }} piRuntime Pi SDK runtime。
+   * @param {object} agent RuntimeHost 解析后的 Agent 配置。
+   * @param {string} agentDir Pi agent 数据目录。
+   * @returns {object|null} Pi AuthStorage、ModelRegistry 和模型对象。
+   */
+  resolveRequestedModel(piRuntime, agent, agentDir) {
+    if (agent.mode !== "resolved" || !agent.model) {
+      return null;
+    }
+
+    const provider = agent.model.provider;
+    const name = agent.model.name;
+    if (!provider || !name) {
+      return null;
+    }
+
+    const authStorage = this.createPiAuthStorage(piRuntime);
+    const modelRegistry = piRuntime.module.ModelRegistry.create(
+      authStorage,
+      path.join(agentDir, "models.json"),
+    );
+    const model = modelRegistry.find(provider, name);
+    if (!model) {
+      throw new Error(`Pi model not found: ${provider}/${name}`);
+    }
+
+    return {
+      authStorage,
+      modelRegistry,
+      model,
+    };
+  }
+
+  /**
    * 处理 Pi session event，并映射为 RuntimeHost 稳定事件。
    *
    * @param {object} session RuntimeHost 内部 session 状态。
@@ -669,6 +791,9 @@ class RuntimeHost {
    */
   handlePiEvent(session, event) {
     if (!isPlainObject(event)) {
+      return;
+    }
+    if (session.completed) {
       return;
     }
 
@@ -899,9 +1024,15 @@ class RuntimeHost {
           command: content,
         },
       });
+      if (session.completed) {
+        return;
+      }
     }
 
     for (const text of this.mockAssistantDeltas(content)) {
+      if (session.completed) {
+        return;
+      }
       this.writeEvent({
         replyTo,
         sessionId: session.id,
@@ -910,12 +1041,15 @@ class RuntimeHost {
       });
     }
 
-    this.writeEvent({
-      replyTo,
-      sessionId: session.id,
-      name: "messageCompleted",
-      payload: {},
-    });
+    if (!session.completed) {
+      this.writeEvent({
+        replyTo,
+        sessionId: session.id,
+        name: "messageCompleted",
+        payload: {},
+      });
+      session.completed = true;
+    }
   }
 
   /**
@@ -1151,6 +1285,72 @@ function normalizedStringArray(value) {
     values.push(trimmed);
   }
   return values;
+}
+
+/**
+ * 解析 startSession payload.agent。
+ *
+ * @param {unknown} value RuntimeHost command payload 中的 agent 字段。
+ * @returns {{ agent: object }|{ error: string }} 解析结果。
+ */
+function parseStartSessionAgent(value) {
+  if (!isPlainObject(value)) {
+    return { error: "startSession requires payload.agent." };
+  }
+
+  if (value.mode === "fixedCodingAgent") {
+    return {
+      agent: {
+        mode: "fixedCodingAgent",
+        skillPaths: normalizedStringArray(value.skillPaths),
+      },
+    };
+  }
+
+  if (value.mode !== "resolved") {
+    return {
+      error: 'startSession requires payload.agent.mode to be "fixedCodingAgent" or "resolved".',
+    };
+  }
+
+  const systemPromptPath = typeof value.systemPromptPath === "string" ? value.systemPromptPath.trim() : "";
+  if (systemPromptPath.length === 0) {
+    return { error: "resolved agent requires systemPromptPath." };
+  }
+
+  return {
+    agent: {
+      id: typeof value.id === "string" ? value.id : "",
+      mode: "resolved",
+      name: typeof value.name === "string" ? value.name : "",
+      model: parseModelConfig(value.model),
+      systemPromptPath,
+      knowledgePaths: normalizedStringArray(value.knowledgePaths),
+      skillPaths: normalizedStringArray(value.skillPaths),
+      toolPaths: normalizedStringArray(value.toolPaths),
+      permissions: isPlainObject(value.permissions) ? value.permissions : {},
+    },
+  };
+}
+
+/**
+ * 解析 RuntimeHost 协议中的模型配置。
+ *
+ * @param {unknown} value agent.model 字段。
+ * @returns {{ provider: string, name: string }|null} 模型配置。
+ */
+function parseModelConfig(value) {
+  if (!isPlainObject(value)) {
+    return null;
+  }
+
+  const provider = typeof value.provider === "string" ? value.provider.trim() : "";
+  const name = typeof value.name === "string" ? value.name.trim() : "";
+  if (!provider || !name) {
+    return null;
+  }
+
+  return { provider, name };
 }
 
 /**

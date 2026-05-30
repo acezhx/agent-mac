@@ -303,8 +303,8 @@ struct AgentFeatureTests {
         #expect(recorder.savedAgents[0].manifest.permissions == agent.manifest.permissions)
     }
 
-    /// 验证保存默认 Pi coding agent 时只提交模型配置，并恢复 Pi 自身管理的字段默认值。
-    @Test func saveDefaultCodingAgentSubmitsOnlyModelAndPiDefaults() async {
+    /// 验证保存默认 Pi coding agent 时只提交 skills，并恢复 Pi 自身管理的字段默认值。
+    @Test func saveDefaultCodingAgentSubmitsOnlySkillsAndPiDefaults() async {
         var agent = makeAgent(
             id: DefaultCodingAgentTemplate.id,
             name: "Custom Coding",
@@ -318,9 +318,9 @@ struct AgentFeatureTests {
 
         var expectedSavedAgent = agent
         expectedSavedAgent.manifest.name = DefaultCodingAgentTemplate.name
-        expectedSavedAgent.manifest.model = ModelConfig(provider: "deepseek", name: "deepseek-v4-flash")
+        expectedSavedAgent.manifest.model = .default
         expectedSavedAgent.manifest.knowledge = []
-        expectedSavedAgent.manifest.skills = []
+        expectedSavedAgent.manifest.skills = ["../../library/skills/hidden-skill"]
         expectedSavedAgent.manifest.tools = []
         expectedSavedAgent.manifest.permissions = .default
         expectedSavedAgent.systemPrompt = DefaultCodingAgentTemplate.systemPrompt
@@ -357,11 +357,11 @@ struct AgentFeatureTests {
             $0.selectedAgent = expectedSavedAgent
             $0.selectedAgentID = DefaultCodingAgentTemplate.id
             $0.editorName = DefaultCodingAgentTemplate.name
-            $0.editorModelProvider = "deepseek"
-            $0.editorModelName = "deepseek-v4-flash"
+            $0.editorModelProvider = "openai"
+            $0.editorModelName = "gpt-5-codex"
             $0.editorSystemPrompt = DefaultCodingAgentTemplate.systemPrompt
             $0.editorKnowledgeReferences = []
-            $0.editorSkillReferences = []
+            $0.editorSkillReferences = ["../../library/skills/hidden-skill"]
             $0.editorToolReferences = []
             $0.errorMessage = nil
         }

@@ -64,11 +64,13 @@ Session 依赖 Approval 的纯服务和处理器协议，不依赖 TCA 或 Swift
 - 调用 RuntimeBridge `sendMessage`。
 - 接收 streaming delta。
 - 在 completed 后结束本轮 running 状态。
+- 接收 `turnCancelled` 后结束当前轮、保留 Runtime Host session，并允许继续发送下一条消息。
 - 上一轮消息未完成时不做队列调度，直接返回结构化错误。
 
 ### 错误和中断
 
 - runtime error 进入 failed。
+- 当前轮取消回到 idle，不进入 aborted，也不清空 Runtime Host session id。
 - 用户 abort 进入 aborted。
 - abort 后忽略迟到的非终态 Runtime events。
 - failed/aborted 状态继续发送或启动前需要显式 reset。
@@ -96,6 +98,7 @@ Session 依赖 Approval 的纯服务和处理器协议，不依赖 TCA 或 Swift
 - [x] 实现发送用户消息。
 - [x] 实现 assistant delta 合并。
 - [x] 实现 completed 状态处理。
+- [x] 实现当前轮取消。
 - [x] 实现 failed 状态处理。
 - [x] 实现 abort。
 - [x] 实现生命周期边界错误。
@@ -110,13 +113,17 @@ Session 依赖 Approval 的纯服务和处理器协议，不依赖 TCA 或 Swift
 
 ## 当前实现
 
-- `ChatSession` 接收 `ResolvedAgentConfig`、`FileStore` 和 `RuntimeBridge` 边界协议，当前按协议启动
-  `fixedCodingAgent` session，并把 workspace 传给 Runtime Host。
+- `ChatSession` 接收 `ResolvedAgentConfig`、`FileStore` 和 `RuntimeBridge` 边界协议，并按
+  `runtimeMode` 启动 `fixedCodingAgent` 或 `resolved` session。
 - `ChatSessionSnapshot` 通过 `AsyncStream` 暴露状态、消息和 pending 工具审批请求，供 AppShell/TCA
   订阅。
 - `ChatMessage` 支持 user、assistant 和 diagnostic 三类消息；assistant delta 会合并到当前 streaming
-  assistant 消息，`messageCompleted` 后结束 streaming 并回到 idle。
+  assistant 消息，工具审批诊断切分 assistant 输出时会先结束上一段 streaming，`messageCompleted` 后清理
+  所有残留 streaming 标记并回到 idle。
 - RuntimeBridge error 会映射为 `SessionError`，session 进入 failed 并追加 diagnostic 消息。
+- `turnCancelled` 会关闭当前 streaming assistant 消息、回到 idle，并保留 `runtimeSessionID`，后续可继续
+  调用 `sendUserMessage()`。
+- `cancelCurrentTurn()` 调用 RuntimeBridge `cancelTurn`，用于 UI 停止当前轮输出，不进入 aborted 终态。
 - `abort()` 会调用 RuntimeBridge `abortSession`，收到 `sessionAborted` 后进入 aborted 并清空 runtime
   session id。
 - `start()` 不会重复创建 Runtime Host session；failed 或 aborted 状态必须先 `reset()` 再复用。
@@ -152,6 +159,8 @@ xcodebuild test -scheme AgentMac -destination 'platform=macOS' -only-testing:Age
 - 用户消息能追加到消息列表。
 - assistant delta 能合并成一条正在生成的 assistant 消息。
 - completed event 后状态回到 idle。
+- 工具审批诊断消息切分 assistant 输出后，completed event 不会留下仍在 loading 的旧 assistant 消息。
+- turnCancelled event 后状态回到 idle，runtimeSessionID 保持不变，并可以继续发送消息。
 - runtime error 后状态进入 failed，并保留错误信息。
 - abort 后状态进入 aborted。
 - 已启动的 session 重复 start 会返回结构化错误，不会再次调用 RuntimeBridge。

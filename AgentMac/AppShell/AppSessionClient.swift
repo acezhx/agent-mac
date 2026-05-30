@@ -4,16 +4,20 @@ import Foundation
 /// AppShell 通过 TCA dependency 使用的 chat session 边界。
 ///
 /// 该类型把 `ChatSessionManager`、`ChatSession` 和 `RuntimeBridge` 包装成 Feature 可注入的操作，
-/// 避免 SwiftUI View 直接持有底层服务对象。第一版只暴露固定 Pi coding agent 会话所需能力。
+/// 避免 SwiftUI View 直接持有底层服务对象。调用方传入 `agentID` 决定创建默认 Pi coding agent
+/// session 或自定义 Agent session。
 nonisolated struct AppSessionClient: Sendable {
-    /// 创建固定 Pi coding agent 的本地 chat session。
-    var createSession: @Sendable (_ workspacePath: String) async throws -> ChatSessionSnapshot
+    /// 创建本地 chat session。
+    var createSession: @Sendable (_ agentID: String, _ workspacePath: String) async throws -> ChatSessionSnapshot
 
     /// 启动 Runtime Host session。
     var startSession: @Sendable () async throws -> Void
 
     /// 发送用户消息。
     var sendMessage: @Sendable (_ content: String) async throws -> Void
+
+    /// 取消当前正在运行的一轮消息。
+    var cancelTurn: @Sendable () async throws -> Void
 
     /// 中断当前 Runtime Host session。
     var abortSession: @Sendable () async throws -> Void
@@ -135,14 +139,28 @@ extension AppSessionClient: DependencyKey {
         let approvalHandler = InteractiveToolApprovalHandler()
         let controller = LiveAppSessionController(approvalHandler: approvalHandler)
         return AppSessionClient(
-            createSession: { workspacePath in
-                try await controller.createSession(workspacePath: workspacePath)
+            createSession: { agentID, workspacePath in
+                try await controller.createSession(
+                    agentID: agentID,
+                    workspacePath: workspacePath
+                )
             },
             startSession: {
                 try await controller.startSession()
             },
             sendMessage: { content in
-                try await controller.sendMessage(content)
+                let session = try await controller.currentSessionReference()
+                try session.sendUserMessage(content)
+            },
+            cancelTurn: {
+                let session = try await controller.currentSessionReference()
+                if let pendingRequest = session.pendingToolApprovalRequest {
+                    approvalHandler.submit(
+                        .denied(reason: "Current turn was cancelled."),
+                        for: pendingRequest.toolCallID
+                    )
+                }
+                try session.cancelCurrentTurn()
             },
             abortSession: {
                 try await controller.abortSession()
@@ -161,7 +179,7 @@ extension AppSessionClient: DependencyKey {
 
     /// 测试默认值；具体测试应显式注入 mock。
     static let testValue = AppSessionClient(
-        createSession: { _ in
+        createSession: { _, _ in
             throw AppSessionClientError("AppSessionClient.createSession is not implemented for this test.")
         },
         startSession: {
@@ -169,6 +187,9 @@ extension AppSessionClient: DependencyKey {
         },
         sendMessage: { _ in
             throw AppSessionClientError("AppSessionClient.sendMessage is not implemented for this test.")
+        },
+        cancelTurn: {
+            throw AppSessionClientError("AppSessionClient.cancelTurn is not implemented for this test.")
         },
         abortSession: {
             throw AppSessionClientError("AppSessionClient.abortSession is not implemented for this test.")
@@ -195,7 +216,7 @@ extension DependencyValues {
     }
 }
 
-/// AppShell live dependency 使用的固定 coding agent session 控制器。
+/// AppShell live dependency 使用的 session 控制器。
 ///
 /// 该 actor 只负责把现有服务组合成一个当前 UI session，不把 TCA 下沉到 Session 或 RuntimeBridge。
 private actor LiveAppSessionController {
@@ -210,15 +231,17 @@ private actor LiveAppSessionController {
         self.approvalHandler = approvalHandler
     }
 
-    /// 创建固定 coding agent 的本地 session。
+    /// 创建本地 session。
     ///
+    /// - Parameter agentID: 要运行的 Agent ID；当前主 UI 默认传入内置 coding agent。
     /// - Parameter workspacePath: UI 传入的工作区路径。
     /// - Returns: 新 session 的当前快照。
-    func createSession(workspacePath: String) throws -> ChatSessionSnapshot {
+    func createSession(agentID: String, workspacePath: String) throws -> ChatSessionSnapshot {
         let storage = try liveStorage()
-        let workspaceURL = workspaceURL(from: workspacePath)
+        let workspaceURL = try workspaceURL(from: workspacePath)
         let session = try storage.manager.createSession(
-            agentConfig: FixedCodingAgentConfig.resolved(workspaceDirectory: workspaceURL)
+            agentID: agentID,
+            workspaceDirectory: workspaceURL
         )
         currentSession = session
         return session.snapshot
@@ -232,12 +255,12 @@ private actor LiveAppSessionController {
         try session.start()
     }
 
-    /// 向当前 session 发送用户消息。
+    /// 返回当前 session 引用，供长时间运行操作在 actor 外执行。
     ///
-    /// - Parameter content: 用户消息文本。
-    func sendMessage(_ content: String) async throws {
-        let session = try requireCurrentSession()
-        try session.sendUserMessage(content)
+    /// `sendUserMessage` 会同步等待 Runtime Host 完成当前轮；如果直接在 actor 内执行，会阻塞
+    /// `cancelTurn` 进入 actor，导致 UI 无法抢占当前生成。
+    func currentSessionReference() throws -> ChatSession {
+        try requireCurrentSession()
     }
 
     /// 中断当前 Runtime Host session。
@@ -265,14 +288,15 @@ private actor LiveAppSessionController {
         }
 
         let fileStore = try FileStore()
-        try fileStore.initialize()
+        try AppStartupClient.initializeAppData(fileStore: fileStore)
 
         let runtimeBridge = RuntimeBridge(
             configuration: try AppRuntimeBridgeConfigurationFactory.make(fileStore: fileStore)
         )
+        let agentLibrary = AgentLibrary(fileStore: fileStore)
         let manager = ChatSessionManager(
             fileStore: fileStore,
-            agentConfigResolver: FixedCodingAgentResolver(),
+            agentConfigResolver: AppAgentSessionConfigResolver(agentLibrary: agentLibrary),
             runtimeBridge: runtimeBridge,
             approvalHandler: approvalHandler
         )
@@ -307,12 +331,66 @@ private actor LiveAppSessionController {
         return currentSession
     }
 
-    private func workspaceURL(from path: String) -> URL {
+    private func workspaceURL(from path: String) throws -> URL {
+        let workspaceURL = AppDefaultWorkspaceDirectory.resolvedURL(from: path)
+        try FileManager.default.createDirectory(
+            at: workspaceURL,
+            withIntermediateDirectories: true
+        )
+        return workspaceURL
+    }
+}
+
+/// AppShell 未显式选择项目文件夹时使用的默认工作目录规则。
+nonisolated enum AppDefaultWorkspaceDirectory {
+    /// 解析 UI 传入路径为空时的默认 workspace 绝对路径。
+    ///
+    /// - Parameter now: 用于生成日期目录的时间。
+    /// - Returns: `~/Documents/Codex/yyyy-MM-dd/new-chat` 形式的绝对路径。
+    static func path(now: Date = Date()) -> String {
+        url(now: now).path
+    }
+
+    /// 解析 UI 传入路径为空时的默认 workspace URL。
+    ///
+    /// - Parameter now: 用于生成日期目录的时间。
+    /// - Returns: `~/Documents/Codex/yyyy-MM-dd/new-chat` 形式的目录 URL。
+    static func url(now: Date = Date()) -> URL {
+        documentsDirectory()
+            .appendingPathComponent("Codex", isDirectory: true)
+            .appendingPathComponent(dateDirectoryName(for: now), isDirectory: true)
+            .appendingPathComponent("new-chat", isDirectory: true)
+            .standardizedFileURL
+    }
+
+    /// 将 UI workspace 输入解析成实际创建 session 使用的目录。
+    ///
+    /// - Parameters:
+    ///   - path: UI 传入的 workspace 路径。
+    ///   - now: 路径为空时用于生成日期目录的时间。
+    /// - Returns: 已标准化的目录 URL。
+    static func resolvedURL(from path: String, now: Date = Date()) -> URL {
         let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty {
-            return FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL
+        guard !trimmed.isEmpty else {
+            return url(now: now)
         }
         return URL(fileURLWithPath: trimmed, isDirectory: true).standardizedFileURL
+    }
+
+    private static func documentsDirectory() -> URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+            ?? FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent("Documents", isDirectory: true)
+    }
+
+    private static func dateDirectoryName(for date: Date) -> String {
+        let components = Calendar.current.dateComponents([.year, .month, .day], from: date)
+        return String(
+            format: "%04d-%02d-%02d",
+            components.year ?? 0,
+            components.month ?? 0,
+            components.day ?? 0
+        )
     }
 }
 
@@ -397,7 +475,7 @@ private nonisolated final class LiveStorage {
     }
 }
 
-/// 固定 Pi coding agent 的临时配置工厂。
+/// 固定 Pi coding agent 的运行配置工厂。
 private nonisolated enum FixedCodingAgentConfig {
     /// 旧版固定 coding agent session record 中使用的内部 ID。
     static let legacyID = "fixed-coding-agent"
@@ -408,18 +486,21 @@ private nonisolated enum FixedCodingAgentConfig {
     /// 固定 Pi coding agent 的展示名称。
     static let name = DefaultCodingAgentTemplate.name
 
-    /// 生成当前阶段使用的 `ResolvedAgentConfig`。
+    /// 生成固定 coding agent 使用的 `ResolvedAgentConfig`。
     ///
+    /// - Parameters:
+    ///   - resolvedAgent: 从 AgentLibrary 解析出的默认 Agent 配置。
     /// - Parameter workspaceDirectory: 会话工作区目录。
     /// - Returns: 固定 coding agent 的运行配置。
-    static func resolved(workspaceDirectory: URL) -> ResolvedAgentConfig {
+    static func resolved(from resolvedAgent: ResolvedAgentConfig, workspaceDirectory: URL) -> ResolvedAgentConfig {
         ResolvedAgentConfig(
+            runtimeMode: .fixedCodingAgent,
             id: id,
             name: name,
             model: .default,
             systemPromptPath: "",
             knowledgePaths: [],
-            skillPaths: [],
+            skillPaths: resolvedAgent.skillPaths,
             toolPaths: [],
             permissions: .default,
             workspacePath: workspaceDirectory.standardizedFileURL.path
@@ -427,18 +508,29 @@ private nonisolated enum FixedCodingAgentConfig {
     }
 }
 
-/// Session 恢复路径使用的固定 coding agent 配置解析器。
-private nonisolated struct FixedCodingAgentResolver: SessionAgentConfigResolving {
-    /// 生成固定 coding agent 的运行配置。
+/// AppShell session 使用的 Agent 配置解析器。
+private nonisolated struct AppAgentSessionConfigResolver: SessionAgentConfigResolving {
+    /// Agent 定义服务。
+    let agentLibrary: AgentLibrary
+
+    /// 生成 session 使用的 Agent 运行配置。
     ///
     /// - Parameters:
-    ///   - id: 恢复记录中的 Agent ID；第一阶段只接受固定 ID。
+    ///   - id: Agent ID。
     ///   - workspaceDirectory: 会话工作区目录。
-    /// - Returns: 固定 coding agent 的运行配置。
+    /// - Returns: 已解析的运行配置。
     func resolvedAgentConfig(for id: String, workspaceDirectory: URL) throws -> ResolvedAgentConfig {
-        guard id == FixedCodingAgentConfig.id || id == FixedCodingAgentConfig.legacyID else {
-            throw AppSessionClientError("Unsupported Pi coding agent id: \(id).")
+        if id == FixedCodingAgentConfig.id || id == FixedCodingAgentConfig.legacyID {
+            let resolvedAgent = try agentLibrary.resolvedAgentConfig(
+                for: FixedCodingAgentConfig.id,
+                workspaceDirectory: workspaceDirectory
+            )
+            return FixedCodingAgentConfig.resolved(
+                from: resolvedAgent,
+                workspaceDirectory: workspaceDirectory
+            )
         }
-        return FixedCodingAgentConfig.resolved(workspaceDirectory: workspaceDirectory)
+
+        return try agentLibrary.resolvedAgentConfig(for: id, workspaceDirectory: workspaceDirectory)
     }
 }

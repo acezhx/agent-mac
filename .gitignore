@@ -15,6 +15,7 @@ xcuserdata/
 build/
 DerivedData/
 *.xcresult
+*.profraw
 
 ## App packaging
 *.ipa

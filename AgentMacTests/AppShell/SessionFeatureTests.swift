@@ -8,9 +8,10 @@ import Testing
 /// 测试只注入 mock `AppSessionClient`，不启动 Runtime Host，也不访问真实 Application Support。
 @MainActor
 struct SessionFeatureTests {
-    /// 验证创建 session 会保存快照并启动快照订阅。
-    @Test func createSessionStoresSnapshot() async {
+    /// 验证创建 session 会保存快照、启动快照订阅并自动启动 Runtime session。
+    @Test func createSessionStoresSnapshotAndStartsRuntime() async {
         let snapshot = makeSnapshot()
+        let recorder = Recorder()
         let stream = AsyncStream<ChatSessionSnapshot> { continuation in
             continuation.finish()
         }
@@ -18,12 +19,16 @@ struct SessionFeatureTests {
             SessionFeature()
         } withDependencies: {
             $0.appSessionClient = AppSessionClient(
-                createSession: { workspacePath in
+                createSession: { agentID, workspacePath in
+                    #expect(agentID == DefaultCodingAgentTemplate.id)
                     #expect(workspacePath == "/tmp/workspace")
                     return snapshot
                 },
-                startSession: {},
+                startSession: {
+                    recorder.didStart = true
+                },
                 sendMessage: { _ in },
+                cancelTurn: {},
                 abortSession: {},
                 resetSession: {},
                 resolveToolApproval: { _, _ in },
@@ -38,7 +43,247 @@ struct SessionFeatureTests {
         await store.receive(.createSessionSucceeded(snapshot)) {
             $0.isCreatingSession = false
             $0.snapshot = snapshot
+            $0.currentSessionAgentID = DefaultCodingAgentTemplate.id
+            $0.currentSessionWorkspacePath = "/tmp/workspace"
             $0.errorMessage = nil
+            $0.isStartingSession = true
+        }
+        await store.receive(.startSessionSucceeded) {
+            $0.isStartingSession = false
+        }
+        #expect(recorder.didStart)
+        await store.finish()
+    }
+
+    /// 验证页面进入时会加载可选择的 Agent 列表。
+    @Test func taskLoadsAgentsForPicker() async {
+        let agents = [
+            AgentSummary(id: DefaultCodingAgentTemplate.id, name: DefaultCodingAgentTemplate.name, model: .default),
+            AgentSummary(id: "support-agent", name: "Support Agent", model: .default),
+        ]
+        let store = TestStore(initialState: SessionFeature.State()) {
+            SessionFeature()
+        } withDependencies: {
+            $0.appAgentClient = makeAgentClient(
+                listAgents: {
+                    agents
+                }
+            )
+        }
+
+        await store.send(.task) {
+            $0.isLoadingAgents = true
+            $0.errorMessage = nil
+        }
+        await store.receive(.loadAgentsSucceeded(agents)) {
+            $0.isLoadingAgents = false
+            $0.hasLoadedAgents = true
+            $0.agents = agents
+        }
+        await store.finish()
+    }
+
+    /// 验证未选择文件夹时没有项目，并展示无项目启动文案。
+    @Test func emptyWorkspaceHasNoProjectAndUsesDefaultPrompt() {
+        var state = SessionFeature.State()
+        state.messageText = "做计划"
+
+        #expect(state.sidebarProjectPath == nil)
+        #expect(state.sessionPromptTitle == "我们该做什么?")
+        #expect(state.workspacePickerTitle == "进入项目工作")
+        #expect(state.canCreateSession)
+        #expect(state.canSubmitInitialMessage)
+    }
+
+    /// 验证选择文件夹后使用文件夹名称作为项目名称。
+    @Test func selectedWorkspaceUsesFolderNameAsProjectName() {
+        let state = SessionFeature.State(workspacePath: "/tmp/learn")
+
+        #expect(state.sidebarProjectPath == "/tmp/learn")
+        #expect(state.sidebarProjectName == "learn")
+        #expect(state.sessionPromptTitle == "我们应该在learn中做些什么?")
+        #expect(state.workspacePickerTitle == "learn")
+        #expect(state.canCreateSession)
+    }
+
+    /// 验证未选择文件夹时会按日期生成默认项目目录。
+    @Test func submitInitialMessageWithoutWorkspaceUsesDailyDefaultProject() async {
+        let expectedWorkspacePath = AppDefaultWorkspaceDirectory.path()
+        let snapshot = makeSnapshot()
+        let stream = AsyncStream<ChatSessionSnapshot> { continuation in
+            continuation.finish()
+        }
+        var state = SessionFeature.State()
+        state.messageText = "开始"
+        let store = TestStore(initialState: state) {
+            SessionFeature()
+        } withDependencies: {
+            $0.appSessionClient = AppSessionClient(
+                createSession: { _, workspacePath in
+                    #expect(workspacePath == expectedWorkspacePath)
+                    return snapshot
+                },
+                startSession: {},
+                sendMessage: { _ in },
+                cancelTurn: {},
+                abortSession: {},
+                resetSession: {},
+                resolveToolApproval: { _, _ in },
+                snapshots: { stream }
+            )
+        }
+
+        await store.send(.submitInitialMessageButtonTapped) {
+            $0.workspacePath = expectedWorkspacePath
+            $0.messageText = ""
+            $0.pendingInitialMessage = "开始"
+            $0.isCreatingSession = true
+            $0.errorMessage = nil
+        }
+        await store.receive(.createSessionSucceeded(snapshot)) {
+            $0.isCreatingSession = false
+            $0.snapshot = snapshot
+            $0.currentSessionAgentID = DefaultCodingAgentTemplate.id
+            $0.currentSessionWorkspacePath = expectedWorkspacePath
+            $0.errorMessage = nil
+            $0.isStartingSession = true
+        }
+        await store.receive(.startSessionSucceeded) {
+            $0.isStartingSession = false
+        }
+        await store.finish()
+    }
+
+    /// 验证新建 session 会使用用户选择的 Agent。
+    @Test func createSessionUsesSelectedAgent() async {
+        let snapshot = makeSnapshot()
+        let stream = AsyncStream<ChatSessionSnapshot> { continuation in
+            continuation.finish()
+        }
+        let store = TestStore(initialState: SessionFeature.State(workspacePath: "/tmp/workspace")) {
+            SessionFeature()
+        } withDependencies: {
+            $0.appSessionClient = AppSessionClient(
+                createSession: { agentID, workspacePath in
+                    #expect(agentID == "support-agent")
+                    #expect(workspacePath == "/tmp/workspace")
+                    return snapshot
+                },
+                startSession: {},
+                sendMessage: { _ in },
+                cancelTurn: {},
+                abortSession: {},
+                resetSession: {},
+                resolveToolApproval: { _, _ in },
+                snapshots: { stream }
+            )
+        }
+
+        await store.send(.agentSelected("support-agent")) {
+            $0.selectedAgentID = "support-agent"
+        }
+        await store.send(.createSessionButtonTapped) {
+            $0.isCreatingSession = true
+            $0.errorMessage = nil
+        }
+        await store.receive(.createSessionSucceeded(snapshot)) {
+            $0.isCreatingSession = false
+            $0.snapshot = snapshot
+            $0.currentSessionAgentID = "support-agent"
+            $0.currentSessionWorkspacePath = "/tmp/workspace"
+            $0.errorMessage = nil
+            $0.isStartingSession = true
+        }
+        await store.receive(.startSessionSucceeded) {
+            $0.isStartingSession = false
+        }
+        await store.finish()
+    }
+
+    /// 验证新建 session composer 会在 Runtime 启动后发送首条消息。
+    @Test func submitInitialMessageCreatesStartsAndSendsWhenRuntimeSnapshotArrives() async {
+        let snapshot = makeSnapshot()
+        let startedSnapshot = makeSnapshot(runtimeSessionID: "ses_001")
+        let recorder = Recorder()
+        let stream = AsyncStream<ChatSessionSnapshot> { continuation in
+            continuation.finish()
+        }
+        var state = SessionFeature.State(workspacePath: "/tmp/workspace")
+        state.messageText = "  做计划  "
+        let store = TestStore(initialState: state) {
+            SessionFeature()
+        } withDependencies: {
+            $0.appSessionClient = AppSessionClient(
+                createSession: { _, _ in
+                    snapshot
+                },
+                startSession: {
+                    recorder.didStart = true
+                },
+                sendMessage: { content in
+                    recorder.sentMessages.append(content)
+                },
+                cancelTurn: {},
+                abortSession: {},
+                resetSession: {},
+                resolveToolApproval: { _, _ in },
+                snapshots: { stream }
+            )
+        }
+
+        await store.send(.submitInitialMessageButtonTapped) {
+            $0.messageText = ""
+            $0.pendingInitialMessage = "做计划"
+            $0.isCreatingSession = true
+            $0.errorMessage = nil
+        }
+        await store.receive(.createSessionSucceeded(snapshot)) {
+            $0.isCreatingSession = false
+            $0.snapshot = snapshot
+            $0.currentSessionAgentID = DefaultCodingAgentTemplate.id
+            $0.currentSessionWorkspacePath = "/tmp/workspace"
+            $0.errorMessage = nil
+            $0.isStartingSession = true
+        }
+        await store.receive(.startSessionSucceeded) {
+            $0.isStartingSession = false
+        }
+        await store.send(.snapshotUpdated(startedSnapshot)) {
+            $0.snapshot = startedSnapshot
+            $0.pendingInitialMessage = nil
+            $0.isSendingMessage = true
+            $0.errorMessage = nil
+        }
+        await store.receive(.sendMessageSucceeded) {
+            $0.isSendingMessage = false
+        }
+
+        #expect(recorder.didStart)
+        #expect(recorder.sentMessages == ["做计划"])
+        await store.finish()
+    }
+
+    /// 验证 New Session 只清理当前可见 session，不删除磁盘历史。
+    @Test func prepareNewSessionClearsVisibleSession() async {
+        let snapshot = makeSnapshot()
+        var state = SessionFeature.State(workspacePath: "/tmp/workspace")
+        state.snapshot = snapshot
+        state.currentSessionAgentID = "support-agent"
+        state.currentSessionWorkspacePath = "/tmp/workspace"
+        state.messageText = "draft"
+        state.errorMessage = "previous error"
+        let store = TestStore(initialState: state) {
+            SessionFeature()
+        }
+
+        await store.send(.prepareNewSessionButtonTapped) {
+            $0.snapshot = nil
+            $0.currentSessionAgentID = nil
+            $0.currentSessionWorkspacePath = nil
+            $0.messageText = ""
+            $0.errorMessage = nil
+            $0.submittedToolApprovalIDs = []
+            $0.isResolvingToolApproval = false
         }
         await store.finish()
     }
@@ -54,7 +299,7 @@ struct SessionFeatureTests {
             SessionFeature()
         } withDependencies: {
             $0.appSessionClient = makeClient(
-                createSession: { _ in
+                createSession: { _, _ in
                     recorder.didCreate = true
                     return newSnapshot
                 }
@@ -74,7 +319,7 @@ struct SessionFeatureTests {
             SessionFeature()
         } withDependencies: {
             $0.appSessionClient = makeClient(
-                createSession: { _ in
+                createSession: { _, _ in
                     throw error
                 }
             )
@@ -99,11 +344,12 @@ struct SessionFeatureTests {
             SessionFeature()
         } withDependencies: {
             $0.appSessionClient = AppSessionClient(
-                createSession: { _ in snapshot },
+                createSession: { _, _ in snapshot },
                 startSession: {
                     recorder.didStart = true
                 },
                 sendMessage: { _ in },
+                cancelTurn: {},
                 abortSession: {},
                 resetSession: {},
                 resolveToolApproval: { _, _ in },
@@ -160,11 +406,12 @@ struct SessionFeatureTests {
             SessionFeature()
         } withDependencies: {
             $0.appSessionClient = AppSessionClient(
-                createSession: { _ in snapshot },
+                createSession: { _, _ in snapshot },
                 startSession: {},
                 sendMessage: { content in
                     recorder.sentMessages.append(content)
                 },
+                cancelTurn: {},
                 abortSession: {},
                 resetSession: {},
                 resolveToolApproval: { _, _ in },
@@ -223,6 +470,63 @@ struct SessionFeatureTests {
         await store.finish()
     }
 
+    /// 验证取消当前轮消息会调用 dependency，并清理取消中标记。
+    @Test func cancelTurnCallsDependencyAndClearsFlag() async {
+        let snapshot = makeSnapshot(runtimeSessionID: "ses_001", state: .running)
+        let recorder = Recorder()
+        var state = SessionFeature.State(workspacePath: "/tmp/workspace")
+        state.snapshot = snapshot
+        state.isSendingMessage = true
+        let store = TestStore(initialState: state) {
+            SessionFeature()
+        } withDependencies: {
+            $0.appSessionClient = makeClient(
+                cancelTurn: {
+                    recorder.didCancelTurn = true
+                }
+            )
+        }
+
+        await store.send(.cancelTurnButtonTapped) {
+            $0.isCancellingTurn = true
+            $0.errorMessage = nil
+        }
+        await store.receive(.cancelTurnSucceeded) {
+            $0.isCancellingTurn = false
+        }
+
+        #expect(recorder.didCancelTurn)
+        await store.finish()
+    }
+
+    /// 验证取消当前轮消息失败时清理取消中标记并展示错误。
+    @Test func cancelTurnFailureClearsFlagAndStoresError() async {
+        let snapshot = makeSnapshot(runtimeSessionID: "ses_001", state: .running)
+        let error = AppSessionClientError("cancel failed")
+        var state = SessionFeature.State(workspacePath: "/tmp/workspace")
+        state.snapshot = snapshot
+        state.isSendingMessage = true
+        let store = TestStore(initialState: state) {
+            SessionFeature()
+        } withDependencies: {
+            $0.appSessionClient = makeClient(
+                cancelTurn: {
+                    throw error
+                }
+            )
+        }
+
+        await store.send(.cancelTurnButtonTapped) {
+            $0.isCancellingTurn = true
+            $0.errorMessage = nil
+        }
+        await store.receive(.cancelTurnFailed(error)) {
+            $0.isCancellingTurn = false
+            $0.errorMessage = "cancel failed"
+        }
+        await store.finish()
+    }
+
     /// 验证失败快照会同步 UI 错误信息。
     @Test func failedSnapshotStoresErrorMessage() async {
         let error = SessionError.runtimeFailed(code: "runtime_failed", message: "boom", recoverable: true)
@@ -231,9 +535,10 @@ struct SessionFeatureTests {
             SessionFeature()
         } withDependencies: {
             $0.appSessionClient = AppSessionClient(
-                createSession: { _ in snapshot },
+                createSession: { _, _ in snapshot },
                 startSession: {},
                 sendMessage: { _ in },
+                cancelTurn: {},
                 abortSession: {},
                 resetSession: {},
                 resolveToolApproval: { _, _ in },
@@ -328,9 +633,10 @@ struct SessionFeatureTests {
             SessionFeature()
         } withDependencies: {
             $0.appSessionClient = AppSessionClient(
-                createSession: { _ in snapshot },
+                createSession: { _, _ in snapshot },
                 startSession: {},
                 sendMessage: { _ in },
+                cancelTurn: {},
                 abortSession: {
                     recorder.didAbort = true
                 },
@@ -431,7 +737,7 @@ struct SessionFeatureTests {
     }
 
     private func makeClient(
-        createSession: @escaping @Sendable (String) async throws -> ChatSessionSnapshot = { _ in
+        createSession: @escaping @Sendable (String, String) async throws -> ChatSessionSnapshot = { _, _ in
             throw AppSessionClientError("Unexpected createSession call.")
         },
         startSession: @escaping @Sendable () async throws -> Void = {
@@ -439,6 +745,9 @@ struct SessionFeatureTests {
         },
         sendMessage: @escaping @Sendable (String) async throws -> Void = { _ in
             throw AppSessionClientError("Unexpected sendMessage call.")
+        },
+        cancelTurn: @escaping @Sendable () async throws -> Void = {
+            throw AppSessionClientError("Unexpected cancelTurn call.")
         },
         abortSession: @escaping @Sendable () async throws -> Void = {
             throw AppSessionClientError("Unexpected abortSession call.")
@@ -459,10 +768,30 @@ struct SessionFeatureTests {
             createSession: createSession,
             startSession: startSession,
             sendMessage: sendMessage,
+            cancelTurn: cancelTurn,
             abortSession: abortSession,
             resetSession: resetSession,
             resolveToolApproval: resolveToolApproval,
             snapshots: snapshots
+        )
+    }
+
+    private func makeAgentClient(
+        listAgents: @escaping @Sendable () async throws -> [AgentSummary] = {
+            throw AppAgentClientError("Unexpected listAgents call.")
+        }
+    ) -> AppAgentClient {
+        AppAgentClient(
+            listAgents: listAgents,
+            loadAgent: { _ in
+                throw AppAgentClientError("Unexpected loadAgent call.")
+            },
+            createAgent: { _, _ in
+                throw AppAgentClientError("Unexpected createAgent call.")
+            },
+            saveAgent: { _ in
+                throw AppAgentClientError("Unexpected saveAgent call.")
+            }
         )
     }
 
@@ -508,6 +837,9 @@ private final class Recorder: @unchecked Sendable {
 
     /// abort 是否被调用。
     var didAbort = false
+
+    /// cancelTurn 是否被调用。
+    var didCancelTurn = false
 
     /// reset 是否被调用。
     var didReset = false

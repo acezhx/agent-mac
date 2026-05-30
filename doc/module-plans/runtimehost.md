@@ -35,6 +35,7 @@ RuntimeHost
   - `listModelCatalog`
   - `startSession`
   - `sendMessage`
+  - `cancelTurn`
   - `abortSession`
 - 第一阶段命令字段保持最小。
 
@@ -57,23 +58,34 @@ RuntimeHost
 - 加载 bundled Pi runtime。
 - 支持 `startSession.payload.agent.mode = fixedCodingAgent`。
 - 使用 Runtime Host 内置的 Pi coding agent 默认配置启动 session。
-- 不读取用户 `agent.yaml`。
-- 不加载用户选择的 knowledge、skills、tools。
+- 只接收 Swift 侧从默认 `coding-agent` 解析出的 `skillPaths`，用于加载用户选择的 skills。
+- 不加载默认 `coding-agent` 的 system prompt、knowledge、tools、权限和模型配置。
 - 启用 Pi 内建 `read`、`bash`、`edit`、`write` 工具。
 - 自定义 tools 默认不启用。
 - 接收用户消息。
 - 转发 assistant streaming output。
+- 支持取消当前一轮消息，调用 Pi `AgentSession.abort()` 后保留 Runtime Host session。
 - 转发 toolcall 和工具执行阶段的 `runtimeActivity` 心跳。
 - 转发 session completed 或 failed。
 - 当前实现使用 Pi `createAgentSession`、内存 session manager 和显式 `tools` 列表。
-- RuntimeHost 显式禁用外部 Pi extensions、skills、prompt templates、themes 和项目 context files。
+- RuntimeHost 显式禁用外部 Pi extensions、prompt templates、themes、项目 context files 和 Pi 默认
+  skills 自动发现，只加载显式传入的 `skillPaths`。
 - Pi 可变配置目录默认写入 `~/Library/Application Support/AgentMac/Pi`，也可由
   `AGENTMAC_PI_AGENT_DIR` 覆盖。
+
+### 自定义 Agent resolved mode
+
+- 支持 `startSession.payload.agent.mode = resolved`。
+- 读取 Swift 侧传入的 `systemPromptPath`、`knowledgePaths` 和 `skillPaths`。
+- `knowledgePaths` 作为上下文文件传给 Pi resource loader。
+- `skillPaths` 作为显式 skills 传给 Pi resource loader。
+- `toolPaths` 非空时返回 `unsupported_feature`，自定义工具执行后置。
 
 ### 审批扩展点
 
 - RuntimeHost 通过内联 Pi extension 在 `tool_call` 执行前输出 `toolApprovalRequested`。
 - 支持 `approveToolCall` command，接收 approved/denied 决策。
+- 支持 `cancelTurn` 在 `sendMessage` 运行期间抢占执行，避免等待普通 command 队列。
 - RuntimeHost 只接收决策；approved 时继续 Pi runtime 流程，denied 时向 Pi 返回阻断结果，
   不把工具执行下沉到 Swift。
 - toolcall 流和工具执行开始/更新/结束会输出 `runtimeActivity`，作为 Swift 侧空闲等待心跳。
@@ -95,9 +107,12 @@ RuntimeHost
 - [x] 实现 `listModelCatalog` 模型清单 command。
 - [x] 实现 mock `startSession`。
 - [x] 实现 mock `sendMessage` streaming。
+- [x] 实现 `cancelTurn` 当前轮取消。
 - [x] 实现 `abortSession` 占位。
 - [x] 接入固定 Pi coding agent。
 - [x] 支持 `fixedCodingAgent` session mode。
+- [x] 支持默认 Pi coding agent 的显式 skills 加载。
+- [x] 支持自定义 Agent `resolved` session mode 的 system prompt、knowledge 和 skills 加载。
 - [x] 将 Pi events 转为稳定 event。
 - [x] 实现工具审批请求和决策回传协议。
 - [x] 实现协议错误处理。
@@ -111,9 +126,11 @@ RuntimeHost
 - 输入非法 JSON 后输出 protocol error，进程不崩溃。
 - 输入未知 command 后输出 unsupported command。
 - mock 模式下 `sendMessage` 能输出多个 delta 和一个 completed。
+- `cancelTurn` 会让当前 `sendMessage` 以 `turnCancelled` 结束，并保留 session 供后续消息继续使用。
 - 接入 Pi 后，固定 Pi coding agent 能成功启动。
 - 固定 Pi coding agent 能对用户消息产生流式回复。
-- 固定 Pi coding agent 模式不读取用户 `agent.yaml`。
+- 固定 Pi coding agent 模式只读取默认 `coding-agent` 中选择的 skills，其它字段保持 Pi 默认行为。
+- resolved Agent 可以把 system prompt、knowledge 和 skills 传给 RuntimeHost。
 - 遇到需要审批的工具请求时发出 `toolApprovalRequested`，并能接收 approved/denied 决策。
 
 ## 第一版不做

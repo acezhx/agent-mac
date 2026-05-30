@@ -336,6 +336,8 @@ nonisolated final class RuntimeBridge: @unchecked Sendable {
     private let decoder = JSONDecoder()
     // Runtime Host event 会唤醒用户发起的 session 操作，队列优先级需匹配等待方以避免优先级反转。
     private let stateQueue = DispatchQueue(label: "cn.himo.AgentMac.RuntimeBridge.state", qos: .userInitiated)
+    // `sendMessage` 运行期间允许 `cancelTurn` 抢占进入，写入 Runtime Host stdin 时必须保持 JSONL 原子顺序。
+    private let writeQueue = DispatchQueue(label: "cn.himo.AgentMac.RuntimeBridge.write", qos: .userInitiated)
     private var eventSemaphore = DispatchSemaphore(value: 0)
 
     private var process: Process?
@@ -493,13 +495,40 @@ nonisolated final class RuntimeBridge: @unchecked Sendable {
     /// - Returns: Runtime Host session id。
     /// - Throws: 进程未启动、写入失败、超时或 Runtime Host 返回 error event 时抛出错误。
     func startSession(workspacePath: String? = nil, timeout: TimeInterval = 5) throws -> String {
-        var payload: [String: RuntimeJSONValue] = [
-            "agent": .object(["mode": .string("fixedCodingAgent")]),
-        ]
+        var payload = fixedCodingAgentPayload(skillPaths: [])
         if let workspacePath {
             payload["workspacePath"] = .string(workspacePath)
         }
 
+        return try startSession(payload: payload, timeout: timeout)
+    }
+
+    /// 使用已解析的 Agent 配置启动 Runtime Host session。
+    ///
+    /// `fixedCodingAgent` 只把显式选择的 skills 传给 Runtime Host，其它能力继续使用 Pi 默认配置；
+    /// `resolved` 会把自定义 Agent 的 system prompt、knowledge、skills、tools 和权限配置编码到协议中。
+    ///
+    /// - Parameters:
+    ///   - agentConfig: 已解析的 Agent 运行配置。
+    ///   - timeout: 等待 sessionStarted 的秒数。
+    /// - Returns: Runtime Host session id。
+    /// - Throws: 进程未启动、写入失败、超时或 Runtime Host 返回 error event 时抛出错误。
+    func startSession(agentConfig: ResolvedAgentConfig, timeout: TimeInterval = 5) throws -> String {
+        let payload: [String: RuntimeJSONValue]
+        switch agentConfig.runtimeMode {
+        case .fixedCodingAgent:
+            payload = fixedCodingAgentPayload(
+                workspacePath: agentConfig.workspacePath,
+                skillPaths: agentConfig.skillPaths
+            )
+        case .resolved:
+            payload = resolvedAgentPayload(agentConfig)
+        }
+
+        return try startSession(payload: payload, timeout: timeout)
+    }
+
+    private func startSession(payload: [String: RuntimeJSONValue], timeout: TimeInterval) throws -> String {
         let command = RuntimeCommand(id: nextCommandID(), name: "startSession", payload: .object(payload))
         try send(command)
         let event = try readMatchingEvent(replyTo: command.id, timeout: timeout)
@@ -507,6 +536,43 @@ nonisolated final class RuntimeBridge: @unchecked Sendable {
             throw RuntimeBridgeError.unexpectedEvent(name: event.name, replyTo: event.replyTo)
         }
         return sessionId
+    }
+
+    private func fixedCodingAgentPayload(workspacePath: String? = nil, skillPaths: [String]) -> [String: RuntimeJSONValue] {
+        var payload: [String: RuntimeJSONValue] = [
+            "agent": .object([
+                "mode": .string(AgentRuntimeMode.fixedCodingAgent.rawValue),
+                "skillPaths": .array(skillPaths.map { .string($0) }),
+            ]),
+        ]
+        if let workspacePath {
+            payload["workspacePath"] = .string(workspacePath)
+        }
+        return payload
+    }
+
+    private func resolvedAgentPayload(_ agentConfig: ResolvedAgentConfig) -> [String: RuntimeJSONValue] {
+        [
+            "agent": .object([
+                "id": .string(agentConfig.id),
+                "mode": .string(AgentRuntimeMode.resolved.rawValue),
+                "name": .string(agentConfig.name),
+                "model": .object([
+                    "provider": .string(agentConfig.model.provider),
+                    "name": .string(agentConfig.model.name),
+                ]),
+                "systemPromptPath": .string(agentConfig.systemPromptPath),
+                "knowledgePaths": .array(agentConfig.knowledgePaths.map { .string($0) }),
+                "skillPaths": .array(agentConfig.skillPaths.map { .string($0) }),
+                "toolPaths": .array(agentConfig.toolPaths.map { .string($0) }),
+                "permissions": .object([
+                    "bash": .string(agentConfig.permissions.bash.rawValue),
+                    "edit": .string(agentConfig.permissions.edit.rawValue),
+                    "network": .string(agentConfig.permissions.network.rawValue),
+                ]),
+            ]),
+            "workspacePath": .string(agentConfig.workspacePath),
+        ]
     }
 
     /// 读取 Runtime Host 暴露的 Pi 模型清单。
@@ -565,10 +631,32 @@ nonisolated final class RuntimeBridge: @unchecked Sendable {
             let event = try readMatchingEvent(replyTo: command.id, timeout: timeout)
             try onEvent?(event)
             events.append(event)
-            if event.name == "messageCompleted" {
+            if event.name == "messageCompleted" || event.name == "turnCancelled" {
                 return events
             }
         }
+    }
+
+    /// 取消当前正在运行的一轮消息，但保留 Runtime Host session。
+    ///
+    /// - Parameters:
+    ///   - sessionId: Runtime Host session id。
+    ///   - timeout: 等待 `turnCancelled` 的秒数。
+    /// - Returns: Runtime Host 返回的 `turnCancelled` event。
+    /// - Throws: 进程未启动、写入失败、超时或 Runtime Host 返回 error event 时抛出错误。
+    @discardableResult
+    func cancelTurn(sessionId: String, timeout: TimeInterval = 5) throws -> RuntimeEvent {
+        let command = RuntimeCommand(
+            id: nextCommandID(),
+            name: "cancelTurn",
+            payload: .object(["sessionId": .string(sessionId)])
+        )
+        try send(command)
+        let event = try readMatchingEvent(replyTo: command.id, timeout: timeout)
+        guard event.name == "turnCancelled" else {
+            throw RuntimeBridgeError.unexpectedEvent(name: event.name, replyTo: event.replyTo)
+        }
+        return event
     }
 
     /// 中断并移除 Runtime Host session。
@@ -632,13 +720,6 @@ nonisolated final class RuntimeBridge: @unchecked Sendable {
     /// - Parameter command: 已构造的 command envelope。
     /// - Throws: 进程未启动、command 编码失败或 stdin 写入失败时抛出错误。
     func send(_ command: RuntimeCommand) throws {
-        let input = try stateQueue.sync {
-            guard process?.isRunning == true, let handle = stdinPipe?.fileHandleForWriting else {
-                throw RuntimeBridgeError.processNotRunning
-            }
-            return handle
-        }
-
         var data: Data
         do {
             data = try encoder.encode(command)
@@ -648,7 +729,17 @@ nonisolated final class RuntimeBridge: @unchecked Sendable {
         }
 
         do {
-            try input.write(contentsOf: data)
+            try writeQueue.sync {
+                let input = try stateQueue.sync {
+                    guard process?.isRunning == true, let handle = stdinPipe?.fileHandleForWriting else {
+                        throw RuntimeBridgeError.processNotRunning
+                    }
+                    return handle
+                }
+                try input.write(contentsOf: data)
+            }
+        } catch let error as RuntimeBridgeError {
+            throw error
         } catch {
             throw RuntimeBridgeError.commandWriteFailed(reason: error.localizedDescription)
         }

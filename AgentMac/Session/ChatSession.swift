@@ -2,16 +2,16 @@ import Foundation
 
 /// Session 使用的 RuntimeBridge 边界。
 ///
-/// 该协议只暴露 Session 需要的固定 coding agent session 能力，便于单元测试使用 mock，
+/// 该协议只暴露 Session 启动和驱动 Runtime session 需要的能力，便于单元测试使用 mock，
 /// 同时避免 Session 了解 RuntimeBridge 的进程管理细节。
 nonisolated protocol SessionRuntimeBridging: AnyObject {
-    /// 启动固定 Pi coding agent session。
+    /// 启动 Runtime Host session。
     ///
     /// - Parameters:
-    ///   - workspacePath: 会话工作目录。
+    ///   - agentConfig: 已解析的 Agent 运行配置。
     ///   - timeout: 等待 Runtime Host event 的秒数。
     /// - Returns: Runtime Host session id。
-    func startSession(workspacePath: String?, timeout: TimeInterval) throws -> String
+    func startSession(agentConfig: ResolvedAgentConfig, timeout: TimeInterval) throws -> String
 
     /// 发送用户消息并按 Runtime Host event 更新调用方。
     ///
@@ -38,6 +38,15 @@ nonisolated protocol SessionRuntimeBridging: AnyObject {
     @discardableResult
     func abortSession(sessionId: String, timeout: TimeInterval) throws -> RuntimeEvent
 
+    /// 取消当前正在运行的一轮消息，但保留 Runtime Host session。
+    ///
+    /// - Parameters:
+    ///   - sessionId: Runtime Host session id。
+    ///   - timeout: 等待 turnCancelled 的秒数。
+    /// - Returns: Runtime Host 返回的 event。
+    @discardableResult
+    func cancelTurn(sessionId: String, timeout: TimeInterval) throws -> RuntimeEvent
+
     /// 将工具审批决策返回 Runtime Host。
     ///
     /// - Parameters:
@@ -59,9 +68,8 @@ nonisolated extension RuntimeBridge: SessionRuntimeBridging {}
 
 /// 一次 Agent 对话的生命周期编排服务。
 ///
-/// `ChatSession` 接收已经由 `AgentLibrary` 解析和校验过的 `ResolvedAgentConfig`，但当前阶段按
-/// Runtime 协议只启动 `fixedCodingAgent` session。它负责维护消息、状态、默认审批拒绝策略，
-/// 并通过 `SessionStore` 保存完整 session record。
+/// `ChatSession` 接收已经由 `AgentLibrary` 或 AppShell 解析和校验过的 `ResolvedAgentConfig`。
+/// 它负责维护消息、状态、默认审批拒绝策略，并通过 `SessionStore` 保存完整 session record。
 nonisolated final class ChatSession: @unchecked Sendable {
     /// 本地 session id。
     let id: UUID
@@ -244,7 +252,7 @@ nonisolated final class ChatSession: @unchecked Sendable {
         }
     }
 
-    /// 启动固定 Pi coding agent session。
+    /// 启动 Runtime Host session。
     ///
     /// - Throws: RuntimeBridge 或 session record 持久化失败时抛出 `SessionError`。
     func start() throws {
@@ -255,7 +263,7 @@ nonisolated final class ChatSession: @unchecked Sendable {
 
         do {
             runtimeSessionID = try runtimeBridge.startSession(
-                workspacePath: agentConfig.workspacePath,
+                agentConfig: agentConfig,
                 timeout: 5
             )
             touch()
@@ -315,6 +323,32 @@ nonisolated final class ChatSession: @unchecked Sendable {
 
         do {
             let event = try runtimeBridge.abortSession(sessionId: runtimeSessionID, timeout: 5)
+            try handleRuntimeEvent(event)
+        } catch {
+            let sessionError = sessionError(from: error)
+            fail(with: sessionError)
+            throw sessionError
+        }
+    }
+
+    /// 取消当前正在运行的一轮消息。
+    ///
+    /// 取消当前轮只终止正在生成的 assistant 输出，不清空 Runtime Host session id，也不让 session
+    /// 进入 aborted 终态；取消完成后调用方可以继续发送下一条消息。
+    ///
+    /// - Throws: RuntimeBridge 或 session record 持久化失败时抛出 `SessionError`。
+    func cancelCurrentTurn() throws {
+        guard isMessageInFlight || pendingToolApprovalRequest != nil else {
+            return
+        }
+        guard let runtimeSessionID else {
+            let error = SessionError.runtimeSessionMissing
+            fail(with: error)
+            throw error
+        }
+
+        do {
+            let event = try runtimeBridge.cancelTurn(sessionId: runtimeSessionID, timeout: 5)
             try handleRuntimeEvent(event)
         } catch {
             let sessionError = sessionError(from: error)
@@ -386,7 +420,7 @@ nonisolated final class ChatSession: @unchecked Sendable {
             try persistRecord()
             emitSnapshot()
         case "messageCompleted":
-            finishStreamingAssistantMessage()
+            finishStreamingAssistantMessages()
             isMessageInFlight = false
             state = .idle
             touch()
@@ -396,6 +430,8 @@ nonisolated final class ChatSession: @unchecked Sendable {
             return
         case "sessionAborted":
             try markAborted()
+        case "turnCancelled":
+            try markCurrentTurnCancelled()
         case "toolApprovalRequested":
             try handleToolApprovalRequest(event)
             try persistRecord()
@@ -467,6 +503,7 @@ nonisolated final class ChatSession: @unchecked Sendable {
         guard let request = makeToolApprovalRequest(from: event) else {
             return
         }
+        finishStreamingAssistantMessages()
 
         let decision: ToolApprovalDecision
         switch approvalService.evaluate(request, permissions: agentConfig.permissions) {
@@ -572,12 +609,10 @@ nonisolated final class ChatSession: @unchecked Sendable {
         touch()
     }
 
-    /// 结束当前 streaming assistant 消息。
-    private func finishStreamingAssistantMessage() {
-        if let lastIndex = messages.indices.last,
-           messages[lastIndex].role == .assistant,
-           messages[lastIndex].isStreaming {
-            messages[lastIndex].isStreaming = false
+    /// 结束所有仍处于 streaming 状态的 assistant 消息。
+    private func finishStreamingAssistantMessages() {
+        for index in messages.indices where messages[index].role == .assistant && messages[index].isStreaming {
+            messages[index].isStreaming = false
         }
     }
 
@@ -585,9 +620,22 @@ nonisolated final class ChatSession: @unchecked Sendable {
     ///
     /// - Throws: session record 持久化失败时抛出 `SessionError`。
     private func markAborted() throws {
-        finishStreamingAssistantMessage()
+        finishStreamingAssistantMessages()
         runtimeSessionID = nil
         state = .aborted
+        pendingToolApprovalRequest = nil
+        isMessageInFlight = false
+        touch()
+        try persistRecord()
+        emitSnapshot()
+    }
+
+    /// 标记当前轮对话已取消。
+    ///
+    /// - Throws: session record 持久化失败时抛出 `SessionError`。
+    private func markCurrentTurnCancelled() throws {
+        finishStreamingAssistantMessages()
+        state = .idle
         pendingToolApprovalRequest = nil
         isMessageInFlight = false
         touch()
@@ -599,7 +647,7 @@ nonisolated final class ChatSession: @unchecked Sendable {
     ///
     /// - Parameter error: Session 错误。
     private func fail(with error: SessionError) {
-        finishStreamingAssistantMessage()
+        finishStreamingAssistantMessages()
         isMessageInFlight = false
         pendingToolApprovalRequest = nil
         state = .failed(error)

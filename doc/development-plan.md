@@ -9,7 +9,8 @@
 3. Node Runtime Host 可以启动固定的 Pi coding agent。
 4. 用户可以从 macOS UI 发送消息。
 5. assistant 回复可以流式显示在 UI 中。
-6. Agent/Resource 管理、Agent 资源选择和工具审批闭环已补入第一版；可配置 Agent 会话仍后续接入。
+6. Agent/Resource 管理、Agent 资源选择和工具审批闭环已补入第一版；默认 Pi coding agent 支持选择
+   skills，自定义 Agent 支持以 resolved mode 启动基础会话。
 
 第一阶段不做数据库、资源版本管理、发布回滚、向量索引和团队同步。
 
@@ -146,9 +147,10 @@ FileStore
 - 支持 `ping` 命令。
 - 支持 `startSession` 命令。
 - 支持 `sendMessage` 命令。
+- 支持 `cancelTurn` 命令，用于取消当前轮输出并保留 session。
 - 先返回模拟 streaming event，验证协议。
 - 接入固定 Pi coding agent 模式。
-- 固定 Pi coding agent 模式不读取用户 `agent.yaml`，只用于验证基础 chat session 主链路。
+- 固定 Pi coding agent 模式只读取默认 `coding-agent` 中选择的 skills，其它配置保持 Pi 默认行为。
 - 将 Pi events 转成 App 侧稳定事件格式。
 
 验收标准：
@@ -157,8 +159,9 @@ FileStore
 - 输入 `ping` 后返回 `pong`。
 - 输入 `startSession` 后返回 session started 事件。
 - 输入 `sendMessage` 后能收到流式 assistant 输出事件。
+- 输入 `cancelTurn` 后当前 `sendMessage` 以 `turnCancelled` 结束，且 session 可继续使用。
 - 固定 Pi coding agent 可以在 Runtime Host 内正常启动。
-- 固定 Pi coding agent 模式不依赖用户创建 Agent。
+- 固定 Pi coding agent 模式依赖启动初始化创建的默认 `coding-agent`，但只使用其中的 skills。
 
 ## 阶段 5：RuntimeBridge
 
@@ -178,7 +181,7 @@ FileStore
 
 - Swift 代码可以启动 Runtime Host。
 - Swift 代码可以发送 `ping` 并收到 `pong`。
-- Swift 代码可以发送 `startSession` 和 `sendMessage`。
+- Swift 代码可以发送 `startSession`、`sendMessage` 和 `cancelTurn`。
 - Swift 代码可以接收流式输出事件。
 - Runtime Host 异常退出时能返回可诊断错误。
 
@@ -223,6 +226,10 @@ FileStore
 - system prompt 编辑器。
 - knowledge、skills、tools 资源选择。
 - 会话页面。
+- Projects -> Sessions 工作台侧栏；启动时没有历史 session，未选择文件夹时项目列表为空。
+- 新建 session 启动 composer。
+- 创建 session 前可以选择文件夹和 Agent，并输入首条消息；选择文件夹时文件夹名称作为项目名称，
+  未选择文件夹时自动使用 `~/Documents/Codex/yyyy-MM-dd/new-chat` 作为默认项目目录。
 - 消息输入框。
 - 流式 assistant 输出展示。
 - 基础错误提示。
@@ -235,8 +242,9 @@ FileStore
 - 用户可以编辑 Agent 的 system prompt。
 - 用户可以在 Settings 中配置 Agent 可使用的模型 provider。
 - 用户可以选择 knowledge、skills、tools。
-- 用户可以选择一个 Agent 启动会话。
+- 用户可以在主会话工作台中选择文件夹和 Agent，并通过首条消息创建 session。
 - 用户可以从 macOS UI 发送消息。
+- 用户可以停止当前轮输出，且不丢失当前 session。
 - 固定 Pi coding agent 的回复可以流式显示在 UI 中。
 
 ## 阶段 8：Approval

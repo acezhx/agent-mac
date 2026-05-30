@@ -104,6 +104,223 @@ struct RuntimeBridgeTests {
         #expect(aborted.name == "sessionAborted")
     }
 
+    /// 验证 RuntimeBridge 可以发送 cancelTurn 并读取 turnCancelled event。
+    @Test func cancelTurnRoundTripsThroughRuntimeHost() throws {
+        let root = temporaryRoot()
+        defer { removeTemporaryRoot(root) }
+        let script = root.appending(path: "cancel-turn.js", directoryHint: .notDirectory)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try """
+        const readline = require('node:readline');
+        const rl = readline.createInterface({ input: process.stdin });
+        rl.on('line', (line) => {
+          const command = JSON.parse(line);
+          if (command.name === 'cancelTurn' && command.payload.sessionId === 'ses_001') {
+            process.stdout.write(JSON.stringify({
+              type: 'event',
+              id: 'evt_cancelled',
+              replyTo: command.id,
+              sessionId: 'ses_001',
+              name: 'turnCancelled',
+              payload: { cancelled: true }
+            }) + '\\n');
+          }
+        });
+        setInterval(() => {}, 10000);
+        """.write(to: script, atomically: true, encoding: .utf8)
+
+        let bridge = RuntimeBridge(configuration: try makeConfiguration(root: root, hostScriptURL: script))
+        defer { bridge.stop() }
+
+        try bridge.start()
+        let event = try bridge.cancelTurn(sessionId: "ses_001")
+
+        #expect(event.name == "turnCancelled")
+        #expect(event.sessionId == "ses_001")
+        #expect(event.payload?["cancelled"]?.boolValue == true)
+    }
+
+    /// 验证 sendMessage 和 cancelTurn 并发写入 Runtime Host stdin 时仍保持完整 JSONL。
+    @Test func concurrentSendMessageAndCancelTurnWriteValidJSONLines() async throws {
+        let root = temporaryRoot()
+        defer { removeTemporaryRoot(root) }
+        let script = root.appending(path: "concurrent-send-cancel.js", directoryHint: .notDirectory)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try """
+        const readline = require('node:readline');
+        const rl = readline.createInterface({ input: process.stdin });
+        let activeReplyTo = null;
+        let eventNumber = 1;
+
+        function writeEvent(replyTo, name, payload) {
+          process.stdout.write(JSON.stringify({
+            type: 'event',
+            id: `evt_${eventNumber++}`,
+            replyTo,
+            sessionId: 'ses_001',
+            name,
+            payload,
+          }) + '\\n');
+        }
+
+        rl.on('line', (line) => {
+          let command;
+          try {
+            command = JSON.parse(line);
+          } catch (error) {
+            process.stdout.write(JSON.stringify({
+              type: 'event',
+              id: `evt_${eventNumber++}`,
+              replyTo: null,
+              name: 'error',
+              payload: {
+                code: 'invalid_json',
+                message: error.message,
+                recoverable: true,
+              },
+            }) + '\\n');
+            return;
+          }
+
+          if (command.name === 'sendMessage') {
+            activeReplyTo = command.id;
+            setTimeout(() => {
+              if (activeReplyTo === command.id) {
+                writeEvent(command.id, 'messageCompleted', {});
+                activeReplyTo = null;
+              }
+            }, 250);
+          } else if (command.name === 'cancelTurn') {
+            if (activeReplyTo) {
+              writeEvent(activeReplyTo, 'turnCancelled', { cancelled: true });
+              activeReplyTo = null;
+            }
+            writeEvent(command.id, 'turnCancelled', { cancelled: true });
+          }
+        });
+        setInterval(() => {}, 10000);
+        """.write(to: script, atomically: true, encoding: .utf8)
+
+        let bridge = RuntimeBridge(configuration: try makeConfiguration(root: root, hostScriptURL: script))
+        defer { bridge.stop() }
+
+        try bridge.start()
+        let largeContent = String(repeating: "x", count: 1_000_000)
+        let sendTask = Task.detached {
+            try bridge.sendMessage(sessionId: "ses_001", content: largeContent, timeout: 5)
+        }
+        try await Task.sleep(nanoseconds: 50_000_000)
+        let cancelEvent = try bridge.cancelTurn(sessionId: "ses_001", timeout: 5)
+        let sendEvents = try await sendTask.value
+
+        #expect(cancelEvent.name == "turnCancelled")
+        #expect(cancelEvent.payload?["cancelled"]?.boolValue == true)
+        #expect(sendEvents.last?.name == "turnCancelled")
+    }
+
+    /// 验证 RuntimeBridge 会把默认 coding agent 的显式 skill paths 编码到 fixedCodingAgent payload。
+    @Test func fixedCodingAgentStartEncodesSelectedSkills() throws {
+        let root = temporaryRoot()
+        defer { removeTemporaryRoot(root) }
+        let script = root.appending(path: "validate-fixed-agent.js", directoryHint: .notDirectory)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let skillPath = root.appending(path: "library/skills/coding", directoryHint: .isDirectory).path
+        try """
+        const readline = require('node:readline');
+        const rl = readline.createInterface({ input: process.stdin });
+        rl.on('line', (line) => {
+          const command = JSON.parse(line);
+          const agent = command.payload.agent;
+          const valid = agent.mode === 'fixedCodingAgent'
+            && agent.skillPaths.length === 1
+            && agent.skillPaths[0] === '\(skillPath)';
+          process.stdout.write(JSON.stringify({
+            type: 'event',
+            id: 'evt_001',
+            replyTo: command.id,
+            sessionId: valid ? 'ses_001' : undefined,
+            name: valid ? 'sessionStarted' : 'error',
+            payload: valid ? {} : { code: 'invalid_test_payload', message: JSON.stringify(command.payload), recoverable: true }
+          }) + '\\n');
+        });
+        setInterval(() => {}, 10000);
+        """.write(to: script, atomically: true, encoding: .utf8)
+
+        let bridge = RuntimeBridge(configuration: try makeConfiguration(root: root, hostScriptURL: script))
+        defer { bridge.stop() }
+
+        try bridge.start()
+        let sessionId = try bridge.startSession(agentConfig: ResolvedAgentConfig(
+            runtimeMode: .fixedCodingAgent,
+            id: "coding-agent",
+            name: "Pi Coding Agent",
+            model: .default,
+            systemPromptPath: "",
+            knowledgePaths: [],
+            skillPaths: [skillPath],
+            toolPaths: [],
+            permissions: .default,
+            workspacePath: root.path
+        ))
+
+        #expect(sessionId == "ses_001")
+    }
+
+    /// 验证 RuntimeBridge 会把自定义 Agent 编码为 resolved payload。
+    @Test func resolvedAgentStartEncodesResolvedPayload() throws {
+        let root = temporaryRoot()
+        defer { removeTemporaryRoot(root) }
+        let script = root.appending(path: "validate-resolved-agent.js", directoryHint: .notDirectory)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let systemPromptPath = root.appending(path: "agents/support/system.md", directoryHint: .notDirectory).path
+        let knowledgePath = root.appending(path: "library/knowledge/refund.md", directoryHint: .notDirectory).path
+        let skillPath = root.appending(path: "library/skills/support", directoryHint: .isDirectory).path
+        try """
+        const readline = require('node:readline');
+        const rl = readline.createInterface({ input: process.stdin });
+        rl.on('line', (line) => {
+          const command = JSON.parse(line);
+          const agent = command.payload.agent;
+          const valid = agent.mode === 'resolved'
+            && agent.id === 'support-agent'
+            && agent.model.provider === 'deepseek'
+            && agent.model.name === 'deepseek-v4-flash'
+            && agent.systemPromptPath === '\(systemPromptPath)'
+            && agent.knowledgePaths[0] === '\(knowledgePath)'
+            && agent.skillPaths[0] === '\(skillPath)'
+            && agent.permissions.bash === 'deny'
+            && command.payload.workspacePath === '\(root.path)';
+          process.stdout.write(JSON.stringify({
+            type: 'event',
+            id: 'evt_001',
+            replyTo: command.id,
+            sessionId: valid ? 'ses_001' : undefined,
+            name: valid ? 'sessionStarted' : 'error',
+            payload: valid ? {} : { code: 'invalid_test_payload', message: JSON.stringify(command.payload), recoverable: true }
+          }) + '\\n');
+        });
+        setInterval(() => {}, 10000);
+        """.write(to: script, atomically: true, encoding: .utf8)
+
+        let bridge = RuntimeBridge(configuration: try makeConfiguration(root: root, hostScriptURL: script))
+        defer { bridge.stop() }
+
+        try bridge.start()
+        let sessionId = try bridge.startSession(agentConfig: ResolvedAgentConfig(
+            id: "support-agent",
+            name: "Support",
+            model: ModelConfig(provider: "deepseek", name: "deepseek-v4-flash"),
+            systemPromptPath: systemPromptPath,
+            knowledgePaths: [knowledgePath],
+            skillPaths: [skillPath],
+            toolPaths: [],
+            permissions: PermissionConfig(bash: .deny, edit: .ask, network: .allow),
+            workspacePath: root.path
+        ))
+
+        #expect(sessionId == "ses_001")
+    }
+
     /// 验证 RuntimeBridge 可以读取 Runtime Host 模型清单事件。
     @Test func modelCatalogRoundTripsThroughRuntimeHost() throws {
         let (bridge, root) = try makeBridge()

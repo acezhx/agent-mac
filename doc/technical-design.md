@@ -192,9 +192,9 @@ Node Runtime Host 是 SwiftUI 和 Pi 之间的桥。
 
 它应该：
 
-- 接收 Swift 传入的固定 Pi coding agent 模式，或接收可配置 Agent 阶段传入的
-  `ResolvedAgentConfig`。
-- 在 `ResolvedAgentConfig` 模式下读取 system prompt、knowledge、skills、tools 绝对路径。
+- 接收 Swift 传入的默认 Pi coding agent 模式，或接收自定义 Agent 的 `ResolvedAgentConfig`。
+- 在 `ResolvedAgentConfig` 模式下读取 system prompt、knowledge、skills 绝对路径；自定义 tools
+  在后续接入前必须明确返回 unsupported，不能静默忽略。
 - 启动和管理 Pi sessions。
 - 将 Pi events 流式转发给 SwiftUI。
 - 将 Pi toolcall 和工具执行阶段的非文本进度转成 `runtimeActivity`，作为 Swift 侧空闲等待心跳。
@@ -204,9 +204,10 @@ Node Runtime Host 是 SwiftUI 和 Pi 之间的桥。
 
 当前固定 Pi coding agent 模式由 Runtime Host 直接创建 Pi session：AgentMac 启用 Pi 内建
 `read`、`bash`、`edit`、`write` 工具，并通过内联 Pi extension 在工具执行前接入
-`toolApprovalRequested` / `approveToolCall` 审批流；同时关闭外部 Pi extensions、skills、
-prompt templates、themes 和 context files 加载。默认 `coding-agent` 因此不读取 AgentLibrary
-的资源；权限字段仍由当前固定模式的审批流解释，默认编辑页不暴露这些字段。
+`toolApprovalRequested` / `approveToolCall` 审批流；同时关闭外部 Pi extensions、prompt
+templates、themes、context files 和 Pi 默认 skills 自动发现。默认 `coding-agent` 可以通过
+AgentMac 选择 skills，Runtime Host 只加载这些显式传入的 `skillPaths`；system prompt、knowledge、
+tools、权限和模型仍使用 Pi coding agent 默认行为。
 
 SwiftUI 应通过一组小命令调用 Runtime Host：
 
@@ -214,14 +215,15 @@ SwiftUI 应通过一组小命令调用 Runtime Host：
 ping
 startSession
 sendMessage
+cancelTurn
 approveToolCall
 abortSession
 ```
 
-基础 chat session 阶段允许 `startSession` 使用固定 Pi coding agent 模式。该模式只用于验证
-SwiftUI -> RuntimeBridge -> RuntimeHost -> Pi 的主链路，不读取用户 `agent.yaml`，也不加载
-用户选择的 knowledge、skills、tools。可配置 Agent 阶段应改为由 `AgentLibrary` 生成
-`ResolvedAgentConfig` 后传给 Runtime Host。
+主会话工作台默认选中 `coding-agent`，用户也可以在创建 session 前选择自定义 Agent。默认
+`coding-agent` 使用固定 Pi coding agent 模式，该模式只从默认 `coding-agent` 的 `agent.yaml` 中读取
+已选择 skills，其它 Agent 字段不会改变 Pi coding agent 默认行为。自定义 Agent 使用 `AgentLibrary`
+生成 `ResolvedAgentConfig` 后传给 Runtime Host。
 
 ## 模块划分
 
@@ -268,12 +270,13 @@ AgentMac/
 当前文件划分：
 
 - `AgentMacApp.swift`：声明主窗口、Agent Library 窗口、Resource Library 窗口和 Settings 窗口。
-- `AppFeature.swift`：根 TCA Feature，组合固定 coding agent 会话页面，并编排首次启动初始化。
-- `AppView.swift`：根视图、启动错误提示、会话工作台、管理窗口和 Settings 入口 SwiftUI 渲染。
+- `AppFeature.swift`：根 TCA Feature，组合会话工作台页面，并编排首次启动初始化。
+- `AppView.swift`：根视图、启动错误提示、Projects -> Sessions 会话工作台、管理窗口和
+  Settings 入口 SwiftUI 渲染。
 - `AppStartupClient.swift`：启动初始化的 TCA dependency 边界。live 实现内部初始化 `FileStore`，
   并在缺失时创建默认 `coding-agent`。该默认 Agent 表示当前内置的 Pi coding agent；reducer 和
-  SwiftUI View 只依赖该 dependency。默认 `coding-agent` 的提示词、资源和权限由 Pi coding
-  agent 当前运行模式管理，Agent 编辑页只暴露模型 provider/name 配置。
+  SwiftUI View 只依赖该 dependency。默认 `coding-agent` 的提示词、knowledge、tools、权限和模型由
+  Pi coding agent 当前运行模式管理，Agent 编辑页只暴露 skills 选择。
 - `AgentFeature.swift`：Agent 管理页面 state、action、reducer 和异步 effect 编排。
 - `AgentView.swift`：Agent 列表、创建表单和编辑表单 SwiftUI 渲染。
 - `AppAgentClient.swift`：Agent 管理的 TCA dependency 边界。live 实现内部调用
@@ -286,23 +289,37 @@ AgentMac/
 - `ResourceView.swift`：Resource 类型切换、列表、创建表单和编辑表单 SwiftUI 渲染。
 - `AppResourceClient.swift`：Resource 管理的 TCA dependency 边界。live 实现内部调用
   `ResourceLibrary`，reducer 和 SwiftUI View 只依赖该 dependency。
-- `SessionFeature.swift`：会话页面 state、action、reducer 和异步 effect 编排。
+- `SessionFeature.swift`：会话工作台 state、action、reducer 和异步 effect 编排；负责加载可选
+  Agent、维护当前 workspace 输入、处理启动 composer 首条消息、创建当前可见 session、订阅快照并处理
+  消息发送和审批交互。
 - `AppSessionClient.swift`：AppShell 的 TCA dependency 边界。live 实现内部组合
-  `FileStore`、`RuntimeBridge` 和 `ChatSessionManager` 来创建固定 coding agent session；
-  reducer 和 SwiftUI View 只依赖该 dependency，不直接持有底层服务。
+  `FileStore`、`RuntimeBridge` 和 `ChatSessionManager` 来创建默认 Pi coding agent 或自定义 Agent
+  session；reducer 和 SwiftUI View 只依赖该 dependency，不直接持有底层服务。
 
-主窗口当前默认显示会话工作台，Agent 管理和 Resource 管理从 toolbar 入口以独立窗口打开。
+主窗口当前默认显示会话工作台，左侧按 Projects -> Sessions 的层级组织当前项目和当前可见 session；
+首次启动不自动加载历史 session，未选择文件夹时项目列表为空。右侧在未创建 session 时显示居中的启动
+composer：未选择文件夹时标题显示“我们该做什么?”，文件夹选择按钮显示“进入项目工作”；选择文件夹后
+以文件夹名称作为项目名称，标题显示“我们应该在<项目名>中做些什么?”。启动 composer 底部先展示文件夹
+选择，再展示 Agent 选择。未选择文件夹时仍可直接开始对话，创建 session 时 AppShell 会自动使用
+`~/Documents/Codex/yyyy-MM-dd/new-chat` 作为默认项目目录，并在创建后显示为当前项目。用户在启动
+composer 中输入首条消息并发送后，AppShell 创建 session、自动启动 Runtime Host session，再发送这条
+消息；随后 UI 锁定当前 session 的 workspace 与 Agent。切换 workspace、切换 Agent 或开始一次全新
+对话都通过 New Session 回到启动 composer 完成。当前版本只维护“当前可见 session”的交互，不在主窗口
+浏览历史 session；session 历史信息和历史列表的存储/检索策略后续单独设计。Agent 管理和 Resource
+管理从 toolbar 或侧栏入口以独立窗口打开。
 Agent 管理当前支持列表、创建、选中加载、编辑名称、从 Settings 白名单选择模型 provider、
-编辑模型 name、编辑 system prompt、选择 knowledge/skills/tools 和保存；其中默认 `coding-agent` 只展示并保存模型配置，
-不展示 Pi coding agent 自身管理的名称、system prompt、资源和权限字段。Resource 管理当前支持
+编辑模型 name、编辑 system prompt、选择 knowledge/skills/tools 和保存；其中默认 `coding-agent`
+只展示并保存 skills，名称、system prompt、knowledge、tools、权限和模型都使用 Pi coding agent 默认值。
+Resource 管理当前支持
 knowledge、skill 和 tool 的列表、创建、纯文本编辑和保存，
 并支持 knowledge 改名、保存成功提示和删除当前选中的 knowledge、skill、tool。
 其中 knowledge、skill 和 tool 创建由 AppShell 自动生成未占用 ID，创建表单不暴露 ID 输入；tool
 使用 `tool`、`tool-2`、`tool-3` 序列，展示名称和配置一起在 `tool.yaml` 中编辑；skill 导入由
 AppShell 选择本地目录，并通过 `AppResourceClient` 生成基于源目录名的未占用 ID 后交给
 `ResourceLibrary` 复制。Agent 编辑页通过 `AppResourceClient` 加载共享资源，并把选择结果保存为
-相对 `agent.yaml` 的 `../../library/...` 引用。工具审批确认 UI 已通过会话页面接入；可配置
-Agent session 后续再接入。
+相对 `agent.yaml` 的 `../../library/...` 引用。工具审批确认 UI 已通过会话页面接入；Runtime/Session
+已支持默认 Pi coding agent 与 resolved 自定义 Agent 两种形态，主会话 UI 已可以在创建 session 时选择
+默认 Pi coding agent 或自定义 Agent。
 
 ### AppSettings
 
@@ -559,14 +576,14 @@ record 应降级为 failed。
   `approved` 或 `denied`。
 - 用 Swift 友好的事件格式返回错误和诊断信息。
 
-第一阶段 RuntimeHost 只支持固定 `fixedCodingAgent` session mode，用于验证
-SwiftUI -> RuntimeBridge -> RuntimeHost -> Pi 主链路。该模式不读取用户 `agent.yaml`，不加载
-用户选择的 knowledge、skills、tools；Runtime Host 只启用 Pi 内建 `read`、`bash`、`edit`、
-`write` 工具，并禁用外部 Pi extensions、skills、prompt templates、themes 和项目 context
-files。
+RuntimeHost 支持两种 session mode：默认 `fixedCodingAgent` 和自定义 `resolved`。`fixedCodingAgent`
+只从默认 `coding-agent` 配置中接收显式选择的 `skillPaths`，Runtime Host 仍只启用 Pi 内建
+`read`、`bash`、`edit`、`write` 工具，并禁用外部 Pi extensions、prompt templates、themes、
+项目 context files 和 Pi 默认 skills 自动发现。
 
-后续可配置 Agent 阶段再支持 `resolved` mode，接收 Swift 侧 `AgentLibrary` 生成的
-`ResolvedAgentConfig`，并读取其中的 system prompt、knowledge、skills、tools 绝对路径。
+`resolved` mode 接收 Swift 侧 `AgentLibrary` 生成的 `ResolvedAgentConfig`，并读取其中的 system
+prompt、knowledge 和 skills 绝对路径；自定义 tools 在第一版仍后置，非空 `toolPaths` 会返回
+unsupported。
 
 不负责：
 

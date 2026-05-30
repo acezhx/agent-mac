@@ -16,7 +16,7 @@ nonisolated enum PermissionDecision: String, Equatable, CaseIterable {
 }
 
 /// Agent 使用的模型配置。
-nonisolated struct ModelConfig: Equatable {
+nonisolated struct ModelConfig: Equatable, Sendable {
     /// 第一版创建 Agent 时使用的默认模型配置。
     static let `default` = ModelConfig(provider: "openai", name: "gpt-5-codex")
 
@@ -130,7 +130,7 @@ nonisolated struct AgentManifest: Equatable, Identifiable {
 }
 
 /// Agent 列表页需要的摘要信息。
-nonisolated struct AgentSummary: Equatable, Identifiable {
+nonisolated struct AgentSummary: Equatable, Identifiable, Sendable {
     /// Agent ID。
     let id: String
 
@@ -186,10 +186,22 @@ nonisolated struct Agent: Equatable, Identifiable {
     }
 }
 
+/// Runtime Host 启动 Agent session 时使用的 Agent 形态。
+nonisolated enum AgentRuntimeMode: String, Equatable {
+    /// 使用 Pi 内置 coding agent 配置，只允许 AgentMac 额外传入显式选择的 skills。
+    case fixedCodingAgent
+
+    /// 使用 AgentLibrary 已解析的自定义 Agent 配置。
+    case resolved
+}
+
 /// Runtime 启动会话前使用的 Agent 配置。
 ///
 /// 所有文件路径都是绝对路径。该结构是运行时临时结构，不应写回 `agent.yaml`。
 nonisolated struct ResolvedAgentConfig: Equatable {
+    /// Runtime Host 启动 session 时采用的 Agent 形态。
+    let runtimeMode: AgentRuntimeMode
+
     /// Agent ID。
     let id: String
 
@@ -216,4 +228,41 @@ nonisolated struct ResolvedAgentConfig: Equatable {
 
     /// 会话工作区绝对路径。
     let workspacePath: String
+
+    /// 创建运行时 Agent 配置。
+    ///
+    /// - Parameters:
+    ///   - runtimeMode: Runtime Host 启动 session 时采用的 Agent 形态。
+    ///   - id: Agent ID。
+    ///   - name: Agent 展示名称。
+    ///   - model: 模型配置。
+    ///   - systemPromptPath: system prompt 文件绝对路径。
+    ///   - knowledgePaths: knowledge 文件绝对路径列表。
+    ///   - skillPaths: skill 目录绝对路径列表。
+    ///   - toolPaths: tool 目录绝对路径列表。
+    ///   - permissions: Agent 权限配置。
+    ///   - workspacePath: 会话工作区绝对路径。
+    init(
+        runtimeMode: AgentRuntimeMode = .resolved,
+        id: String,
+        name: String,
+        model: ModelConfig,
+        systemPromptPath: String,
+        knowledgePaths: [String],
+        skillPaths: [String],
+        toolPaths: [String],
+        permissions: PermissionConfig,
+        workspacePath: String
+    ) {
+        self.runtimeMode = runtimeMode
+        self.id = id
+        self.name = name
+        self.model = model
+        self.systemPromptPath = systemPromptPath
+        self.knowledgePaths = knowledgePaths
+        self.skillPaths = skillPaths
+        self.toolPaths = toolPaths
+        self.permissions = permissions
+        self.workspacePath = workspacePath
+    }
 }

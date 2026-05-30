@@ -104,12 +104,11 @@ Runtime Host 输出的 event 使用统一 envelope。
 
 ```text
 fixedCodingAgent:
-  基础 chat session 阶段使用。Runtime Host 使用内置 Pi coding agent 配置启动 session，
-  不读取用户 agent.yaml，也不加载用户选择的 knowledge、skills、tools。
+  默认 Pi coding agent 使用。Runtime Host 使用内置 Pi coding agent 配置启动 session，
+  只接收 AgentMac 传入的显式 skillPaths；system prompt、knowledge、tools、权限和模型都使用默认配置。
 
 resolved:
-  可配置 Agent 阶段使用。Swift 侧 `AgentLibrary` 先生成 ResolvedAgentConfig，再传给
-  Runtime Host。
+  自定义 Agent 使用。Swift 侧 `AgentLibrary` 先生成 ResolvedAgentConfig，再传给 Runtime Host。
 ```
 
 固定 Pi coding agent 的规则：
@@ -117,7 +116,10 @@ resolved:
 - 只用于验证 SwiftUI -> RuntimeBridge -> RuntimeHost -> Pi 主链路。
 - 使用 bundled Pi runtime。
 - Runtime Host 启用 Pi 内建 `read`、`bash`、`edit`、`write` 工具。
-- Runtime Host 不加载外部 Pi extensions、skills、prompt templates、themes 和项目 context files。
+- Runtime Host 不加载外部 Pi extensions、prompt templates、themes 和项目 context files。
+- Runtime Host 关闭 Pi 默认 skills 自动发现，只加载 `agent.skillPaths` 中由 AgentMac 显式传入的 skills。
+- 默认 `coding-agent` 的 `agent.yaml` 只作为用户选择 skills 的持久化入口；其它字段不改变 Pi coding
+  agent 的默认行为。
 - Pi 内建工具调用通过 Runtime Host 内联 extension 在执行前触发 `toolApprovalRequested`；
   Swift 回传 `approved` 后继续执行，回传 `denied` 后由 Pi 收到被阻断的工具结果。
 - 需要模型凭据时，由 Swift 启动 Runtime Host 时通过安全方式提供；第一版测试可以使用
@@ -230,7 +232,7 @@ Events：
 
 失败时返回 `error` event。
 
-基础 chat session 阶段可以使用固定 Pi coding agent：
+默认 Pi coding agent 可以使用 `fixedCodingAgent`：
 
 ```json
 {
@@ -239,12 +241,21 @@ Events：
   "name": "startSession",
   "payload": {
     "agent": {
-      "mode": "fixedCodingAgent"
+      "mode": "fixedCodingAgent",
+      "skillPaths": [
+        "/Users/me/Library/Application Support/AgentMac/library/skills/report-writing"
+      ]
     },
     "workspacePath": "/Users/me/Project/demo"
   }
 }
 ```
+
+`fixedCodingAgent` 的 `skillPaths` 可省略或为空数组。Runtime Host 必须忽略该模式下除
+`skillPaths` 以外的用户 Agent 配置。
+
+`resolved` 当前加载 system prompt、knowledge 和 skills；`toolPaths` 非空时 Runtime Host 返回
+`unsupported_feature`，避免自定义工具在未接入前被静默忽略。
 
 ### sendMessage
 
@@ -275,6 +286,64 @@ Events：
 {"type":"event","id":"evt_005","replyTo":"cmd_003","sessionId":"ses_001","name":"messageCompleted","payload":{}}
 ```
 
+如果当前轮被用户取消，`sendMessage` 的终止事件为 `turnCancelled`，Runtime Host session 仍保留：
+
+```json
+{"type":"event","id":"evt_005","replyTo":"cmd_003","sessionId":"ses_001","name":"turnCancelled","payload":{"cancelled":true}}
+```
+
+### cancelTurn
+
+取消当前正在运行的一轮用户消息，但保留 Runtime Host session，后续仍可继续 `sendMessage`。
+该命令必须能在 `sendMessage` 运行期间被 Runtime Host 处理，不能被普通 command 队列阻塞。
+
+Command：
+
+```json
+{
+  "type": "command",
+  "id": "cmd_cancel_001",
+  "name": "cancelTurn",
+  "payload": {
+    "sessionId": "ses_001"
+  }
+}
+```
+
+Events：
+
+```json
+{"type":"event","id":"evt_cancel_001","replyTo":"cmd_003","sessionId":"ses_001","name":"turnCancelled","payload":{"cancelled":true}}
+{"type":"event","id":"evt_cancel_002","replyTo":"cmd_cancel_001","sessionId":"ses_001","name":"turnCancelled","payload":{"cancelled":true}}
+```
+
+第一条 event 结束原 `sendMessage` 流；第二条 event 响应 `cancelTurn` 命令。若当前没有正在运行的
+turn，Runtime Host 只响应 `cancelTurn` 命令，并返回 `payload.cancelled = false`。
+
+### abortSession
+
+中断并移除整个 Runtime Host session。该命令用于终止 session 生命周期，不用于 composer 中的
+Stop 当前生成。
+
+Command：
+
+```json
+{
+  "type": "command",
+  "id": "cmd_abort_001",
+  "name": "abortSession",
+  "payload": {
+    "sessionId": "ses_001"
+  }
+}
+```
+
+Event：
+
+```json
+{"type":"event","id":"evt_abort_001","replyTo":"cmd_abort_001","sessionId":"ses_001","name":"sessionAborted","payload":{}}
+```
+
 ### loginOAuthProvider
 
 通过 Pi `AuthStorage.login` 启动 provider OAuth/订阅授权。当前 Settings 页面只会发送
@@ -303,29 +372,6 @@ Events：
 
 `oauthAuthorizationRequested.payload.url` 必须由 Swift 用系统浏览器打开。Runtime Host 会等待 Pi
 OAuth callback server 完成并由 Pi 写入 `auth.json`；失败时返回 `oauth_failed` error event。
-
-### abortSession
-
-中断正在运行的 session。
-
-Command：
-
-```json
-{
-  "type": "command",
-  "id": "cmd_004",
-  "name": "abortSession",
-  "payload": {
-    "sessionId": "ses_001"
-  }
-}
-```
-
-Event：
-
-```json
-{"type":"event","id":"evt_006","replyTo":"cmd_004","sessionId":"ses_001","name":"sessionAborted","payload":{}}
-```
 
 ### approveToolCall
 

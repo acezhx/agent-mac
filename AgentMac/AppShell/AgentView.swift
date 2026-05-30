@@ -204,62 +204,64 @@ private struct AgentEditorView: View {
                             }
                         }
 
-                        formSection(title: "Model") {
-                            LabeledContent("Provider") {
-                                Picker(
-                                    "Provider",
-                                    selection: $store.editorModelProvider.sending(\.editorModelProviderChanged)
-                                ) {
-                                    ForEach(providerOptions, id: \.self) { provider in
-                                        Text(providerLabel(
-                                            provider,
-                                            selectedProvider: selectedProvider,
-                                            allowedProviders: allowedProviders
-                                        ))
-                                        .tag(provider)
-                                    }
-                                }
-                                .labelsHidden()
-                            }
-
-                            LabeledContent("Model") {
-                                if isLoadingModelCatalog && modelPickerOptions.isEmpty {
-                                    ProgressView()
-                                        .controlSize(.small)
-                                } else if modelPickerOptions.isEmpty {
-                                    TextField(
-                                        "gpt-5-codex",
-                                        text: $store.editorModelName.sending(\.editorModelNameChanged)
-                                    )
-                                    .textFieldStyle(.roundedBorder)
-                                } else {
+                        if !store.isEditingDefaultCodingAgent {
+                            formSection(title: "Model") {
+                                LabeledContent("Provider") {
                                     Picker(
-                                        "Model",
-                                        selection: $store.editorModelName.sending(\.editorModelNameChanged)
+                                        "Provider",
+                                        selection: $store.editorModelProvider.sending(\.editorModelProviderChanged)
                                     ) {
-                                        ForEach(modelPickerOptions, id: \.modelID) { model in
-                                            Text(model.displayName).tag(model.modelID)
+                                        ForEach(providerOptions, id: \.self) { provider in
+                                            Text(providerLabel(
+                                                provider,
+                                                selectedProvider: selectedProvider,
+                                                allowedProviders: allowedProviders
+                                            ))
+                                            .tag(provider)
                                         }
                                     }
                                     .labelsHidden()
                                 }
-                            }
 
-                            if !store.isEditorModelProviderAllowed {
-                                Text("Provider is not allowed in Settings.")
-                                    .font(.caption)
-                                    .foregroundStyle(.red)
-                            }
+                                LabeledContent("Model") {
+                                    if isLoadingModelCatalog && modelPickerOptions.isEmpty {
+                                        ProgressView()
+                                            .controlSize(.small)
+                                    } else if modelPickerOptions.isEmpty {
+                                        TextField(
+                                            "gpt-5-codex",
+                                            text: $store.editorModelName.sending(\.editorModelNameChanged)
+                                        )
+                                        .textFieldStyle(.roundedBorder)
+                                    } else {
+                                        Picker(
+                                            "Model",
+                                            selection: $store.editorModelName.sending(\.editorModelNameChanged)
+                                        ) {
+                                            ForEach(modelPickerOptions, id: \.modelID) { model in
+                                                Text(model.displayName).tag(model.modelID)
+                                            }
+                                        }
+                                        .labelsHidden()
+                                    }
+                                }
 
-                            if !store.isEditorModelNameAvailable {
-                                Text("Model is not available for selected provider.")
-                                    .font(.caption)
-                                    .foregroundStyle(.red)
+                                if !store.isEditorModelProviderAllowed {
+                                    Text("Provider is not allowed in Settings.")
+                                        .font(.caption)
+                                        .foregroundStyle(.red)
+                                }
+
+                                if !store.isEditorModelNameAvailable {
+                                    Text("Model is not available for selected provider.")
+                                        .font(.caption)
+                                        .foregroundStyle(.red)
+                                }
                             }
                         }
 
-                        if !store.isEditingDefaultCodingAgent {
-                            formSection(title: "Resources") {
+                        formSection(title: "Resources") {
+                            if !store.isEditingDefaultCodingAgent {
                                 ResourceSelectionList(
                                     title: "Knowledge",
                                     emptyTitle: "No knowledge resources",
@@ -268,16 +270,18 @@ private struct AgentEditorView: View {
                                     selectedReferences: store.editorKnowledgeReferences,
                                     store: store
                                 )
+                            }
 
-                                ResourceSelectionList(
-                                    title: "Skills",
-                                    emptyTitle: "No skills",
-                                    kind: .skill,
-                                    resources: store.availableSkills,
-                                    selectedReferences: store.editorSkillReferences,
-                                    store: store
-                                )
+                            ResourceSelectionList(
+                                title: "Skills",
+                                emptyTitle: "No skills",
+                                kind: .skill,
+                                resources: store.availableSkills,
+                                selectedReferences: store.editorSkillReferences,
+                                store: store
+                            )
 
+                            if !store.isEditingDefaultCodingAgent {
                                 ResourceSelectionList(
                                     title: "Tools",
                                     emptyTitle: "No tools",
@@ -287,7 +291,9 @@ private struct AgentEditorView: View {
                                     store: store
                                 )
                             }
+                        }
 
+                        if !store.isEditingDefaultCodingAgent {
                             formSection(title: "System Prompt") {
                                 TextEditor(text: $store.editorSystemPrompt.sending(\.editorSystemPromptChanged))
                                     .font(.body)

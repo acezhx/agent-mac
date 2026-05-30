@@ -19,7 +19,7 @@ nonisolated struct AppAgentClient: Sendable {
 }
 
 /// AppShell dependency 对 Agent UI 暴露的结构化错误。
-nonisolated struct AppAgentClientError: Error, Equatable {
+nonisolated struct AppAgentClientError: Error, Equatable, Sendable {
     /// 可直接用于 UI 展示或测试断言的错误信息。
     let message: String
 

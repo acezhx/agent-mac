@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { existsSync } from "node:fs";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -161,6 +161,63 @@ test("fixed coding agent session starts and streams mock message", async (t) => 
     name: "messageCompleted",
     payload: {},
   });
+});
+
+test("resolved agent session starts in mock runtime", async (t) => {
+  const host = startRuntimeHost(t);
+
+  host.writeCommand({
+    type: "command",
+    id: "cmd_resolved_start",
+    name: "startSession",
+    payload: {
+      agent: {
+        id: "support-agent",
+        mode: "resolved",
+        name: "Support",
+        model: { provider: "openai", name: "gpt-5-codex" },
+        systemPromptPath: "/tmp/agentmac-runtimehost-test/system.md",
+        knowledgePaths: ["/tmp/agentmac-runtimehost-test/knowledge.md"],
+        skillPaths: ["/tmp/agentmac-runtimehost-test/skills/support"],
+        toolPaths: [],
+        permissions: { bash: "ask", edit: "ask", network: "ask" },
+      },
+      workspacePath: "/tmp/agentmac-runtimehost-test",
+    },
+  });
+
+  assert.equal((await host.readEvent()).name, "sessionStarted");
+});
+
+test("resolved agent with custom tools returns unsupported feature", async (t) => {
+  const host = startRuntimeHost(t);
+
+  host.writeCommand({
+    type: "command",
+    id: "cmd_resolved_tools",
+    name: "startSession",
+    payload: {
+      agent: {
+        id: "support-agent",
+        mode: "resolved",
+        name: "Support",
+        model: { provider: "openai", name: "gpt-5-codex" },
+        systemPromptPath: "/tmp/agentmac-runtimehost-test/system.md",
+        knowledgePaths: [],
+        skillPaths: [],
+        toolPaths: ["/tmp/agentmac-runtimehost-test/tools/custom"],
+        permissions: { bash: "ask", edit: "ask", network: "ask" },
+      },
+      workspacePath: "/tmp/agentmac-runtimehost-test",
+    },
+  });
+
+  const event = await host.readEvent();
+  assert.equal(event.type, "event");
+  assert.equal(event.replyTo, "cmd_resolved_tools");
+  assert.equal(event.name, "error");
+  assert.equal(event.payload.code, "unsupported_feature");
+  assert.equal(event.payload.recoverable, true);
 });
 
 test("sendMessage requires an existing session", async (t) => {
@@ -344,6 +401,7 @@ test("createPiSession enables approved Pi built-in tools", async () => {
   const tempDir = await mkdtemp(join(tmpdir(), "agentmac-runtimehost-tools-"));
   const previousAgentDir = process.env.AGENTMAC_PI_AGENT_DIR;
   process.env.AGENTMAC_PI_AGENT_DIR = join(tempDir, "agent");
+  const skillPath = join(tempDir, "skills", "coding");
 
   let resourceOptions;
   let createOptions;
@@ -383,17 +441,94 @@ test("createPiSession enables approved Pi built-in tools", async () => {
   };
 
   try {
-    const session = await host.createPiSession("ses_001", tempDir);
+    const session = await host.createPiSession("ses_001", tempDir, {
+      mode: "fixedCodingAgent",
+      skillPaths: [skillPath],
+    });
 
     assert.equal(session.kind, "pi");
     assert.deepEqual(createOptions.tools, ["read", "bash", "edit", "write"]);
     assert.equal(Object.hasOwn(createOptions, "noTools"), false);
     assert.equal(resourceOptions.noExtensions, true);
     assert.equal(resourceOptions.noSkills, true);
+    assert.deepEqual(resourceOptions.additionalSkillPaths, [skillPath]);
     assert.equal(resourceOptions.noPromptTemplates, true);
     assert.equal(resourceOptions.noThemes, true);
     assert.equal(resourceOptions.noContextFiles, true);
     assert.equal(resourceOptions.extensionFactories.length, 1);
+  } finally {
+    if (previousAgentDir === undefined) {
+      delete process.env.AGENTMAC_PI_AGENT_DIR;
+    } else {
+      process.env.AGENTMAC_PI_AGENT_DIR = previousAgentDir;
+    }
+  }
+});
+
+test("resolved agent configures prompt knowledge and skills for Pi resource loader", async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), "agentmac-runtimehost-resolved-"));
+  const previousAgentDir = process.env.AGENTMAC_PI_AGENT_DIR;
+  process.env.AGENTMAC_PI_AGENT_DIR = join(tempDir, "agent");
+  const systemPromptPath = join(tempDir, "system.md");
+  const knowledgePath = join(tempDir, "knowledge.md");
+  const skillPath = join(tempDir, "skills", "support");
+  await writeFile(systemPromptPath, "You are a support agent.", "utf-8");
+  await writeFile(knowledgePath, "Refunds take five days.", "utf-8");
+
+  let resourceOptions;
+  const host = createInProcessRuntimeHost();
+  host.piRuntime = {
+    module: {
+      SettingsManager: {
+        create() {
+          return {};
+        },
+      },
+      DefaultResourceLoader: class {
+        constructor(options) {
+          resourceOptions = options;
+        }
+
+        async reload() {}
+      },
+      SessionManager: {
+        inMemory(cwd) {
+          return { cwd };
+        },
+      },
+      async createAgentSession() {
+        return {
+          session: {
+            subscribe() {
+              return () => {};
+            },
+            dispose() {},
+          },
+        };
+      },
+    },
+    entryPath: "/tmp/fake-pi-entry.js",
+  };
+
+  try {
+    await host.createPiSession("ses_001", tempDir, {
+      mode: "resolved",
+      model: null,
+      systemPromptPath,
+      knowledgePaths: [knowledgePath],
+      skillPaths: [skillPath],
+      toolPaths: [],
+    });
+
+    assert.equal(resourceOptions.systemPromptOverride, "You are a support agent.");
+    assert.deepEqual(resourceOptions.appendSystemPromptOverride(["ignored"]), []);
+    assert.deepEqual(resourceOptions.additionalSkillPaths, [skillPath]);
+    assert.deepEqual(resourceOptions.agentsFilesOverride().agentsFiles, [
+      {
+        path: knowledgePath,
+        content: "Refunds take five days.",
+      },
+    ]);
   } finally {
     if (previousAgentDir === undefined) {
       delete process.env.AGENTMAC_PI_AGENT_DIR;
@@ -797,6 +932,81 @@ test("abortSession removes pi session even when Pi abort throws", async () => {
   assert.equal(events.at(-1).name, "sessionAborted");
 });
 
+test("cancelTurn stops active pi turn without removing session", async () => {
+  const host = createInProcessRuntimeHost();
+  let abortCalled = false;
+  let disposed = false;
+  let releaseSend;
+  let sendCallCount = 0;
+  host.sessions.set("ses_001", {
+    kind: "pi",
+    id: "ses_001",
+    piSession: {
+      async sendUserMessage() {
+        sendCallCount += 1;
+        if (sendCallCount === 1) {
+          await new Promise((resolve) => {
+            releaseSend = resolve;
+          });
+        }
+      },
+      async abort() {
+        abortCalled = true;
+        releaseSend?.();
+      },
+      dispose() {
+        disposed = true;
+      },
+    },
+    pendingToolApprovals: new Map(),
+    unsubscribe() {},
+    testFauxRegistration: null,
+  });
+
+  host.handleLine(JSON.stringify({
+    type: "command",
+    id: "cmd_send",
+    name: "sendMessage",
+    payload: {
+      sessionId: "ses_001",
+      message: { role: "user", content: "slow" },
+    },
+  }));
+  await waitUntil(() => host.sessions.get("ses_001")?.activeReplyTo === "cmd_send");
+
+  host.handleLine(JSON.stringify({
+    type: "command",
+    id: "cmd_cancel",
+    name: "cancelTurn",
+    payload: {
+      sessionId: "ses_001",
+    },
+  }));
+  await waitUntil(() => host.events.some((event) => event.replyTo === "cmd_cancel"));
+  await host.commandQueue;
+
+  assert.equal(abortCalled, true);
+  assert.equal(disposed, false);
+  assert.equal(host.sessions.has("ses_001"), true);
+  assert.deepEqual(host.events.map((event) => [event.replyTo, event.name, event.payload]), [
+    ["cmd_send", "turnCancelled", { cancelled: true }],
+    ["cmd_cancel", "turnCancelled", { cancelled: true }],
+  ]);
+
+  host.events.length = 0;
+  await host.sendMessage({
+    id: "cmd_next",
+    payload: {
+      sessionId: "ses_001",
+      message: { role: "user", content: "next" },
+    },
+  });
+
+  assert.equal(sendCallCount, 2);
+  assert.equal(host.events.at(-1).replyTo, "cmd_next");
+  assert.equal(host.events.at(-1).name, "messageCompleted");
+});
+
 test("fixed coding agent streams through Pi SDK faux provider", {
   skip: realPiRuntimeSkipReason(),
 }, async (t) => {
@@ -1056,4 +1266,14 @@ function createInProcessRuntimeHost() {
   });
   host.events = events;
   return host;
+}
+
+async function waitUntil(condition) {
+  for (let index = 0; index < 100; index += 1) {
+    if (condition()) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error("Timed out waiting for condition.");
 }

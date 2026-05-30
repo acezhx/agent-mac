@@ -47,6 +47,7 @@
 - `listModelCatalog` 模型清单。
 - `startSession`。
 - `sendMessage` mock streaming。
+- `cancelTurn` 取消当前轮并保留 session。
 - `loginOAuthProvider` 调用 Pi `AuthStorage.login` 并转发浏览器授权事件。
 - 错误事件。
 - 固定 Pi coding agent 启动。
@@ -192,18 +193,24 @@ xcodebuild test -scheme AgentMac -destination 'platform=macOS'
 - 非法 JSON 返回 `invalid_json`。
 - 未知 command 返回 `unsupported_command`。
 - mock `sendMessage` 返回多个 delta 和 completed。
+- `cancelTurn` 可在 `sendMessage` 运行期间抢占执行，使当前 `sendMessage` 以 `turnCancelled` 结束，
+  且不会删除 Runtime Host session。
 - 固定 Pi coding agent 可以启动。
 - 固定 Pi coding agent 启用 Pi 内建 `read`、`bash`、`edit`、`write` 工具，工具调用会在执行前进入
   Runtime Host 审批 hook。
+- 固定 Pi coding agent 会把默认 `coding-agent` 选择的 skills 作为显式 `skillPaths` 传给 Pi
+  resource loader。
+- resolved Agent 会把 system prompt、knowledge 和 skills 传给 Pi resource loader。
+- resolved Agent 的自定义 `toolPaths` 在未接入前返回 `unsupported_feature`。
 - Runtime Host 会把 toolcall 和工具执行阶段的非文本进度转成 `runtimeActivity`。
 - Runtime Host 的 `loginOAuthProvider` 只接受当前支持的 `anthropic` 和 `openai-codex`，并把 Pi OAuth
   授权 URL 转成 `oauthAuthorizationRequested`。
 - vendored Node/Pi 存在时，faux provider 集成测试可以覆盖固定 Pi coding agent 的流式输出。
 
-固定 Pi coding agent 是 Runtime Host 的临时 session mode，用于验证 SwiftUI ->
-RuntimeBridge -> RuntimeHost -> Pi 主链路。该模式不读取用户 `agent.yaml`。真实 Pi 会话可能
-依赖模型凭据；没有凭据时，至少保留 mock streaming 自动化测试，并在最终验收中手工验证真实
-Pi 会话。
+固定 Pi coding agent 是 Runtime Host 的默认 session mode，用于验证 SwiftUI -> RuntimeBridge ->
+RuntimeHost -> Pi 主链路。该模式只从默认 `coding-agent` 的 `agent.yaml` 读取 skills，其它字段
+保持 Pi 默认行为。真实 Pi 会话可能依赖模型凭据；没有凭据时，至少保留 mock streaming 自动化
+测试，并在最终验收中手工验证真实 Pi 会话。
 
 ### RuntimeBridge
 
@@ -213,6 +220,7 @@ Pi 会话。
 - `ping` 往返。
 - `listModelCatalog` 往返。
 - `startSession` 和 `sendMessage` 流式输出。
+- `cancelTurn` 往返和 `turnCancelled` 终止流式读取。
 - `abortSession` 清理。
 - event 解析。
 - Runtime Host error event 映射。
@@ -240,19 +248,24 @@ Pi 会话。
 
 必须自动化覆盖：
 
-- 创建 session 成功后保存 `ChatSessionSnapshot` 并启动快照订阅 effect。
+- 创建 session 成功后保存 `ChatSessionSnapshot`、启动快照订阅 effect，并自动调用 Runtime start。
 - 根 AppFeature 启动时初始化 Application Support 数据目录，且成功后不重复初始化。
 - 启动初始化会在缺失时创建表示内置 Pi coding agent 的默认 `coding-agent`，且不会覆盖用户已有的同 ID Agent。
-  默认 `coding-agent` 的编辑保存只覆盖模型配置。
+  默认 `coding-agent` 的编辑保存只覆盖用户选择的 skills。
 - 启动初始化失败时展示错误。
 - Runtime 常见启动错误映射为包含修复方向的 UI 提示。
 - 第一阶段已有当前 session 时不会再次创建本地 session。
-- 启动 Runtime session 的进行中标记和成功清理。
+- Runtime session 自动启动和手动启动 action 的进行中标记及成功清理。
 - 发送消息时裁剪空白、清空输入并调用 dependency。
+- 取消当前轮消息会调用 dependency、清理取消中标记，并且不进入 aborted 终态。
 - failed snapshot 同步为 UI 错误信息。
-- abort/reset action 调用 dependency 并清理进行中标记。
-- create/start/send/abort/reset 失败时清理对应进行中标记并展示错误。
+- abort/reset action 调用 dependency 并清理进行中标记；UI 的 Stop 使用 cancelTurn，不使用 abort。
+- create/start/send/cancel/abort/reset 失败时清理对应进行中标记并展示错误。
 - 快照订阅失败时展示错误。
+- Session 工作台进入时加载可选择的 Agent 列表。
+- 创建 session 时使用用户当前选择的 Agent。
+- 启动 composer 提交首条消息后，会创建 session、自动启动 Runtime，并在 Runtime session id 出现后发送首条消息。
+- New Session 只清理当前可见 session 并回到启动 composer，不删除磁盘 session record。
 - Agent 列表加载后保存摘要。
 - 选择 Agent 后加载编辑区字段，并同步已选择的 knowledge、skills、tools。
 - Agent 编辑页加载 ResourceLibrary 中可选的 knowledge、skills、tools。
@@ -260,7 +273,8 @@ Pi 会话。
 - Agent 编辑页加载 RuntimeHost/Pi 模型清单，切换 provider 时选择该 provider 下的模型。
 - 模型清单已加载时，Agent 编辑页不保存当前 provider 下不存在的模型 name。
 - Agent 编辑页勾选或取消勾选资源时更新当前编辑状态。
-- 保存默认 Pi coding agent 时只提交模型配置，并恢复 Pi 自身管理的 system prompt、资源和权限默认值。
+- 保存默认 Pi coding agent 时只提交 skills，并恢复 Pi 自身管理的 system prompt、knowledge、tools、
+  权限和模型默认值。
 - 创建 Agent 后清空创建表单、选中新 Agent 并更新列表。
 - 保存 Agent 时提交当前资源选择，并保留 system prompt、模型和权限配置。
 - Agent 创建和保存失败时清理对应进行中标记并展示错误。
@@ -306,12 +320,16 @@ macOS build 和手工 UI 验收覆盖；窗口内部的业务状态仍由 `Agent
 
 手工验收仍覆盖：
 
-- 创建固定 coding agent session。
-- 启动 Runtime Host session。
+- 启动 App 后确认没有历史 session 自动展示，左侧项目列表在未选择文件夹时为空。
+- 未选择文件夹时直接发送首条消息，会自动使用 `~/Documents/Codex/yyyy-MM-dd/new-chat` 作为默认项目目录。
+- 在启动 composer 底部先选择文件夹，再选择 Agent；确认文件夹名称作为项目名称显示在左侧。
+- 创建默认 Pi coding agent session。
+- 确认 Runtime Host session 自动启动。
 - 发送消息。
+- 当前轮运行时点击 Stop 只取消本轮输出，保留 session 并可继续发送消息。
 - 流式展示回复。
 - 展示 failed/aborted 状态。
-- abort/reset 最小路径。
+- Stop 最小路径。
 
 2026-05-27 已用真实 Pi 和本地模型配置从 macOS UI 跑通固定 coding agent chat session。
 本地调试可把 Pi 配置放在 `~/Library/Application Support/AgentMac/Pi/settings.json` 和
@@ -341,10 +359,11 @@ Agent 管理、资源管理和 Approval UI 分别补 reducer 测试；必要的 
 1. 启动 App。
 2. RuntimeBridge 启动 Runtime Host。
 3. Runtime Host ping 成功。
-4. 选择固定 Pi coding agent。
-5. 从 UI 输入一条消息。
-6. assistant 回复流式显示。
-7. session 完成后 UI 回到可输入状态。
+4. 在主会话工作台选择文件夹和默认 Pi coding agent，确认项目名称来自文件夹名。
+5. 创建 session，并确认 Runtime 自动启动。
+6. 从 UI 输入一条消息。
+7. assistant 回复流式显示。
+8. session 完成后 UI 回到可输入状态。
 ```
 
 可配置 Agent 验收：
@@ -352,10 +371,13 @@ Agent 管理、资源管理和 Approval UI 分别补 reducer 测试；必要的 
 ```text
 1. 创建 Agent。
 2. 编辑自定义 Agent 的 system prompt。
-3. 为自定义 Agent 选择 knowledge、skills、tools。
+3. 为自定义 Agent 选择 knowledge 和 skills。
 4. 保存 Agent。
 5. 重新打开 Agent，配置保持一致。
-6. 使用该 Agent 启动 session。
+6. 在主会话工作台选择该 Agent 创建 session。
+7. 通过 resolved Runtime/Session 链路启动 session。
+
+自定义 tools 执行后置；`toolPaths` 非空时应验证 RuntimeHost 返回 `unsupported_feature`。
 ```
 
 工具审批验收：

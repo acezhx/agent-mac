@@ -152,10 +152,10 @@ struct AgentFeature {
             selectedAgent != nil
                 && !hasOperationInFlight
                 && (isEditingDefaultCodingAgent
-                    || !editorName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                && isEditorModelProviderAllowed
-                && !editorModelProvider.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                && isEditorModelNameAvailable
+                    || (!editorName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        && isEditorModelProviderAllowed
+                        && !editorModelProvider.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        && isEditorModelNameAvailable))
         }
 
         /// 当前编辑区模型 provider 是否在应用设置允许列表中。
@@ -325,8 +325,9 @@ struct AgentFeature {
 
             if agent.id == DefaultCodingAgentTemplate.id {
                 agent.manifest.name = DefaultCodingAgentTemplate.name
+                agent.manifest.model = .default
                 agent.manifest.knowledge = []
-                agent.manifest.skills = []
+                agent.manifest.skills = editorSkillReferences
                 agent.manifest.tools = []
                 agent.manifest.permissions = .default
                 agent.systemPrompt = DefaultCodingAgentTemplate.systemPrompt

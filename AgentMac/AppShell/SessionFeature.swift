@@ -1,7 +1,7 @@
 import ComposableArchitecture
 import Foundation
 
-/// 固定 Pi coding agent 会话页面 Feature。
+/// Agent 会话工作台 Feature。
 ///
 /// 该 Feature 只管理 UI 状态和 effect 编排。会话创建、RuntimeHost 启动、消息发送和快照订阅都通过
 /// `AppSessionClient` 注入，底层服务不依赖 TCA。
@@ -10,8 +10,20 @@ struct SessionFeature {
     /// 会话页面状态。
     @ObservableState
     struct State: Equatable {
+        /// 可用于创建会话的 Agent 摘要列表。
+        var agents: [AgentSummary]
+
+        /// 新建 session 时选择的 Agent ID。
+        var selectedAgentID: String
+
         /// 当前 workspace 路径输入。
         var workspacePath: String
+
+        /// 当前显示 session 创建时使用的 Agent ID。
+        var currentSessionAgentID: String?
+
+        /// 当前显示 session 创建时使用的 workspace 路径。
+        var currentSessionWorkspacePath: String?
 
         /// 当前 session 快照。
         var snapshot: ChatSessionSnapshot?
@@ -19,17 +31,29 @@ struct SessionFeature {
         /// 消息输入框内容。
         var messageText: String
 
+        /// 等待 Runtime session 启动完成后发送的首条消息。
+        var pendingInitialMessage: String?
+
         /// 最近一次操作错误。
         var errorMessage: String?
 
         /// 是否正在创建 session。
         var isCreatingSession: Bool
 
+        /// 是否已经加载过 Agent 列表。
+        var hasLoadedAgents: Bool
+
+        /// 是否正在加载 Agent 列表。
+        var isLoadingAgents: Bool
+
         /// 是否正在启动 Runtime session。
         var isStartingSession: Bool
 
         /// 是否正在发送消息。
         var isSendingMessage: Bool
+
+        /// 是否正在取消当前这一轮消息。
+        var isCancellingTurn: Bool
 
         /// 是否正在中断 session。
         var isAbortingSession: Bool
@@ -47,13 +71,21 @@ struct SessionFeature {
         ///
         /// - Parameter workspacePath: 默认 workspace 路径。
         init(workspacePath: String = "") {
+            self.agents = []
+            self.selectedAgentID = DefaultCodingAgentTemplate.id
             self.workspacePath = workspacePath
+            self.currentSessionAgentID = nil
+            self.currentSessionWorkspacePath = nil
             self.snapshot = nil
             self.messageText = ""
+            self.pendingInitialMessage = nil
             self.errorMessage = nil
             self.isCreatingSession = false
+            self.hasLoadedAgents = false
+            self.isLoadingAgents = false
             self.isStartingSession = false
             self.isSendingMessage = false
+            self.isCancellingTurn = false
             self.isAbortingSession = false
             self.isResettingSession = false
             self.isResolvingToolApproval = false
@@ -68,8 +100,10 @@ struct SessionFeature {
         /// 是否有会话相关操作正在运行。
         var hasOperationInFlight: Bool {
             isCreatingSession
+                || isLoadingAgents
                 || isStartingSession
                 || isSendingMessage
+                || isCancellingTurn
                 || isAbortingSession
                 || isResettingSession
                 || isResolvingToolApproval
@@ -80,9 +114,109 @@ struct SessionFeature {
             snapshot?.pendingToolApprovalRequest
         }
 
+        /// Agent Picker 展示的稳定选项。
+        var agentPickerOptions: [AgentSummary] {
+            var options = agents
+            if !options.contains(where: { $0.id == Self.defaultAgentSummary.id }) {
+                options.insert(Self.defaultAgentSummary, at: 0)
+            }
+            if !selectedAgentID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+               !options.contains(where: { $0.id == selectedAgentID }) {
+                options.append(
+                    AgentSummary(
+                        id: selectedAgentID,
+                        name: "\(selectedAgentID) (unavailable)",
+                        model: .default
+                    )
+                )
+            }
+            return options
+        }
+
+        /// 当前选择的 Agent 展示名。
+        var selectedAgentName: String {
+            agentName(for: selectedAgentID)
+        }
+
+        /// 当前显示 session 的 Agent 展示名。
+        var currentSessionAgentName: String {
+            agentName(for: currentSessionAgentID ?? selectedAgentID)
+        }
+
+        /// 新建 session 使用的 workspace 展示名。
+        var selectedWorkspaceName: String {
+            workspaceName(for: workspacePath)
+        }
+
+        /// 当前显示 session 的 workspace 展示名。
+        var currentSessionWorkspaceName: String {
+            workspaceName(for: currentSessionWorkspacePath ?? workspacePath)
+        }
+
+        /// 新建 session 使用的 workspace 说明。
+        var selectedWorkspaceDetail: String {
+            workspaceDetail(for: workspacePath)
+        }
+
+        /// 当前显示 session 的 workspace 说明。
+        var currentSessionWorkspaceDetail: String {
+            workspaceDetail(for: currentSessionWorkspacePath ?? workspacePath)
+        }
+
+        /// 左侧项目列表当前可展示的项目路径。
+        var sidebarProjectPath: String? {
+            let path = (currentSessionWorkspacePath ?? workspacePath)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return path.isEmpty ? nil : path
+        }
+
+        /// 左侧项目列表当前可展示的项目名称。
+        var sidebarProjectName: String {
+            guard let sidebarProjectPath else {
+                return ""
+            }
+            return workspaceName(for: sidebarProjectPath)
+        }
+
+        /// 左侧项目列表当前可展示的项目说明。
+        var sidebarProjectDetail: String {
+            sidebarProjectPath ?? ""
+        }
+
+        /// 是否正在展示 session 启动 composer。
+        var isPreparingSession: Bool {
+            snapshot == nil
+        }
+
+        /// 是否可以编辑新建 session 的配置。
+        var canEditSessionSetup: Bool {
+            snapshot == nil && !hasOperationInFlight
+        }
+
         /// 是否可以创建新的本地 session。
         var canCreateSession: Bool {
-            snapshot == nil && !hasOperationInFlight
+            snapshot == nil
+                && !hasOperationInFlight
+                && !selectedAgentID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+
+        /// 是否可以通过新建 session composer 提交首条消息。
+        var canSubmitInitialMessage: Bool {
+            canCreateSession
+                && !messageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+
+        /// 是否可以关闭当前可见 session 并回到启动 composer。
+        var canPrepareNewSession: Bool {
+            guard let snapshot, !hasOperationInFlight else {
+                return false
+            }
+            switch snapshot.state {
+            case .idle, .failed, .aborted:
+                return true
+            case .running:
+                return false
+            }
         }
 
         /// 是否可以启动 Runtime session。
@@ -116,6 +250,14 @@ struct SessionFeature {
             }
         }
 
+        /// 是否可以取消当前这一轮消息。
+        var canCancelCurrentTurn: Bool {
+            guard snapshot?.runtimeSessionID != nil, !isCancellingTurn else {
+                return false
+            }
+            return isSendingMessage
+        }
+
         /// 是否可以中断当前 Runtime session。
         var canAbortSession: Bool {
             guard let snapshot, snapshot.runtimeSessionID != nil, !hasOperationInFlight else {
@@ -146,6 +288,9 @@ struct SessionFeature {
             if pendingToolApprovalRequest != nil {
                 return "Awaiting Approval"
             }
+            if isCancellingTurn {
+                return "Stopping"
+            }
             if isSendingMessage {
                 return "Streaming"
             }
@@ -174,9 +319,18 @@ struct SessionFeature {
         /// 状态详情。
         var statusDetail: String {
             guard let snapshot else {
-                return "Create a fixed coding agent session to begin."
+                return "Select a project folder and agent for a new session."
             }
 
+            if isStartingSession {
+                return "Starting Runtime Host session."
+            }
+            if isAbortingSession {
+                return "Stopping current run."
+            }
+            if isResettingSession {
+                return "Resetting local session."
+            }
             if let pendingToolApprovalRequest {
                 return "\(pendingToolApprovalRequest.toolName): \(pendingToolApprovalRequest.summary)"
             }
@@ -184,7 +338,7 @@ struct SessionFeature {
             switch snapshot.state {
             case .idle:
                 return snapshot.runtimeSessionID == nil
-                    ? "Local session is ready. Start Runtime Host before sending a message."
+                    ? "Runtime session is not started. Create a new session to retry."
                     : "Runtime session is ready for the next message."
             case .running:
                 return snapshot.runtimeSessionID == nil
@@ -193,13 +347,73 @@ struct SessionFeature {
             case let .failed(error):
                 return error.localizedDescription
             case .aborted:
-                return "Runtime session was aborted. Reset before starting again."
+                return "Runtime session was stopped. Start a new session before continuing."
             }
+        }
+
+        /// 新建 session 页面标题。
+        var sessionPromptTitle: String {
+            let workspace = workspacePath.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !workspace.isEmpty else {
+                return "我们该做什么?"
+            }
+            return "我们应该在\(selectedWorkspaceName)中做些什么?"
+        }
+
+        /// 新建 session 的 workspace 按钮标题。
+        var workspacePickerTitle: String {
+            let workspace = workspacePath.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !workspace.isEmpty else {
+                return "进入项目工作"
+            }
+            return selectedWorkspaceName
+        }
+
+        private static let defaultAgentSummary = AgentSummary(
+            id: DefaultCodingAgentTemplate.id,
+            name: DefaultCodingAgentTemplate.name,
+            model: .default
+        )
+
+        private func agentName(for id: String) -> String {
+            if id == DefaultCodingAgentTemplate.id {
+                return DefaultCodingAgentTemplate.name
+            }
+            return agents.first(where: { $0.id == id })?.name ?? id
+        }
+
+        private func workspaceName(for path: String) -> String {
+            let trimmedPath = path.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmedPath.isEmpty else {
+                return "No Project"
+            }
+            let lastPathComponent = URL(fileURLWithPath: trimmedPath, isDirectory: true).lastPathComponent
+            return lastPathComponent.isEmpty ? trimmedPath : lastPathComponent
+        }
+
+        private func workspaceDetail(for path: String) -> String {
+            let trimmedPath = path.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmedPath.isEmpty ? "No project selected" : trimmedPath
         }
     }
 
     /// 会话页面 action。
     enum Action: Equatable, Sendable {
+        /// 页面进入时加载新建 session 所需数据。
+        case task
+
+        /// 用户点击刷新 Agent 列表。
+        case refreshAgentsButtonTapped
+
+        /// Agent 列表加载成功。
+        case loadAgentsSucceeded([AgentSummary])
+
+        /// Agent 列表加载失败。
+        case loadAgentsFailed(AppAgentClientError)
+
+        /// 新建 session Agent 选择变化。
+        case agentSelected(String)
+
         /// workspace 输入变化。
         case workspacePathChanged(String)
 
@@ -208,6 +422,12 @@ struct SessionFeature {
 
         /// 用户点击创建 session。
         case createSessionButtonTapped
+
+        /// 用户从新建 session composer 提交首条消息。
+        case submitInitialMessageButtonTapped
+
+        /// 用户从当前 session 回到启动 composer。
+        case prepareNewSessionButtonTapped
 
         /// 创建 session 成功。
         case createSessionSucceeded(ChatSessionSnapshot)
@@ -232,6 +452,15 @@ struct SessionFeature {
 
         /// 发送消息失败。
         case sendMessageFailed(AppSessionClientError)
+
+        /// 用户点击取消当前轮消息。
+        case cancelTurnButtonTapped
+
+        /// 取消当前轮消息成功。
+        case cancelTurnSucceeded
+
+        /// 取消当前轮消息失败。
+        case cancelTurnFailed(AppSessionClientError)
 
         /// 用户点击中断 session。
         case abortSessionButtonTapped
@@ -274,6 +503,7 @@ struct SessionFeature {
     }
 
     private nonisolated enum CancelID: Hashable, Sendable {
+        case agents
         case snapshots
     }
 
@@ -281,6 +511,44 @@ struct SessionFeature {
     var body: some Reducer<State, Action> {
         Reduce { state, action in
             switch action {
+            case .task:
+                guard !state.hasLoadedAgents, !state.isLoadingAgents else {
+                    return .none
+                }
+                state.isLoadingAgents = true
+                state.errorMessage = nil
+                return loadAgentsEffect()
+
+            case .refreshAgentsButtonTapped:
+                state.isLoadingAgents = true
+                state.errorMessage = nil
+                return loadAgentsEffect()
+
+            case let .loadAgentsSucceeded(agents):
+                state.isLoadingAgents = false
+                state.hasLoadedAgents = true
+                state.agents = agents
+                if !agents.contains(where: { $0.id == state.selectedAgentID }) {
+                    if agents.contains(where: { $0.id == DefaultCodingAgentTemplate.id }) {
+                        state.selectedAgentID = DefaultCodingAgentTemplate.id
+                    } else if let firstAgent = agents.first {
+                        state.selectedAgentID = firstAgent.id
+                    } else {
+                        state.selectedAgentID = DefaultCodingAgentTemplate.id
+                    }
+                }
+                return .none
+
+            case let .loadAgentsFailed(error):
+                state.isLoadingAgents = false
+                state.hasLoadedAgents = false
+                state.errorMessage = error.message
+                return .none
+
+            case let .agentSelected(agentID):
+                state.selectedAgentID = agentID
+                return .none
+
             case let .workspacePathChanged(workspacePath):
                 state.workspacePath = workspacePath
                 return .none
@@ -293,27 +561,65 @@ struct SessionFeature {
                 guard state.canCreateSession else {
                     return .none
                 }
+                let workspacePath = resolvedWorkspacePathForSession(state.workspacePath)
+                state.workspacePath = workspacePath
                 state.isCreatingSession = true
                 state.errorMessage = nil
-                let workspacePath = state.workspacePath
-                @Dependency(AppSessionClient.self) var appSessionClient
-                return .run { send in
-                    do {
-                        let snapshot = try await appSessionClient.createSession(workspacePath)
-                        await send(.createSessionSucceeded(snapshot))
-                    } catch {
-                        await send(.createSessionFailed(AppSessionClientError(error)))
-                    }
+                return createSessionEffect(
+                    agentID: state.selectedAgentID,
+                    workspacePath: workspacePath
+                )
+
+            case .submitInitialMessageButtonTapped:
+                guard state.canSubmitInitialMessage else {
+                    return .none
                 }
+                let workspacePath = resolvedWorkspacePathForSession(state.workspacePath)
+                state.workspacePath = workspacePath
+                state.pendingInitialMessage = state.messageText.trimmingCharacters(in: .whitespacesAndNewlines)
+                state.messageText = ""
+                state.isCreatingSession = true
+                state.errorMessage = nil
+                return createSessionEffect(
+                    agentID: state.selectedAgentID,
+                    workspacePath: workspacePath
+                )
+
+            case .prepareNewSessionButtonTapped:
+                guard state.canPrepareNewSession else {
+                    return .none
+                }
+                state.snapshot = nil
+                state.currentSessionAgentID = nil
+                state.currentSessionWorkspacePath = nil
+                state.messageText = ""
+                state.pendingInitialMessage = nil
+                state.errorMessage = nil
+                state.submittedToolApprovalIDs = []
+                state.isResolvingToolApproval = false
+                return .cancel(id: CancelID.snapshots)
 
             case let .createSessionSucceeded(snapshot):
                 state.isCreatingSession = false
                 state.snapshot = snapshot
+                state.currentSessionAgentID = state.selectedAgentID
+                state.currentSessionWorkspacePath = state.workspacePath
                 state.errorMessage = nil
-                return observeSnapshotsEffect()
+                guard state.canStartSession else {
+                    return observeSnapshotsEffect()
+                }
+                state.isStartingSession = true
+                return .merge(
+                    observeSnapshotsEffect(),
+                    startSessionEffect()
+                )
 
             case let .createSessionFailed(error):
                 state.isCreatingSession = false
+                if let pendingInitialMessage = state.pendingInitialMessage {
+                    state.messageText = pendingInitialMessage
+                    state.pendingInitialMessage = nil
+                }
                 state.errorMessage = error.message
                 return .none
 
@@ -323,22 +629,18 @@ struct SessionFeature {
                 }
                 state.isStartingSession = true
                 state.errorMessage = nil
-                @Dependency(AppSessionClient.self) var appSessionClient
-                return .run { send in
-                    do {
-                        try await appSessionClient.startSession()
-                        await send(.startSessionSucceeded)
-                    } catch {
-                        await send(.startSessionFailed(AppSessionClientError(error)))
-                    }
-                }
+                return startSessionEffect()
 
             case .startSessionSucceeded:
                 state.isStartingSession = false
-                return .none
+                return sendPendingInitialMessageIfReady(state: &state)
 
             case let .startSessionFailed(error):
                 state.isStartingSession = false
+                if let pendingInitialMessage = state.pendingInitialMessage {
+                    state.messageText = pendingInitialMessage
+                    state.pendingInitialMessage = nil
+                }
                 state.errorMessage = error.message
                 return .none
 
@@ -350,22 +652,41 @@ struct SessionFeature {
                 state.messageText = ""
                 state.isSendingMessage = true
                 state.errorMessage = nil
-                @Dependency(AppSessionClient.self) var appSessionClient
-                return .run { send in
-                    do {
-                        try await appSessionClient.sendMessage(content)
-                        await send(.sendMessageSucceeded)
-                    } catch {
-                        await send(.sendMessageFailed(AppSessionClientError(error)))
-                    }
-                }
+                return sendMessageEffect(content)
 
             case .sendMessageSucceeded:
                 state.isSendingMessage = false
+                state.isCancellingTurn = false
                 return .none
 
             case let .sendMessageFailed(error):
                 state.isSendingMessage = false
+                state.isCancellingTurn = false
+                state.errorMessage = error.message
+                return .none
+
+            case .cancelTurnButtonTapped:
+                guard state.canCancelCurrentTurn else {
+                    return .none
+                }
+                state.isCancellingTurn = true
+                state.errorMessage = nil
+                @Dependency(AppSessionClient.self) var appSessionClient
+                return .run { send in
+                    do {
+                        try await appSessionClient.cancelTurn()
+                        await send(.cancelTurnSucceeded)
+                    } catch {
+                        await send(.cancelTurnFailed(AppSessionClientError(error)))
+                    }
+                }
+
+            case .cancelTurnSucceeded:
+                state.isCancellingTurn = false
+                return .none
+
+            case let .cancelTurnFailed(error):
+                state.isCancellingTurn = false
                 state.errorMessage = error.message
                 return .none
 
@@ -425,10 +746,13 @@ struct SessionFeature {
                     state.submittedToolApprovalIDs.removeAll()
                     state.isResolvingToolApproval = false
                 }
+                if case .idle = snapshot.state {
+                    state.isCancellingTurn = false
+                }
                 if case let .failed(error) = snapshot.state {
                     state.errorMessage = error.localizedDescription
                 }
-                return .none
+                return sendPendingInitialMessageIfReady(state: &state)
 
             case let .snapshotObservationFailed(error):
                 state.errorMessage = error.message
@@ -496,6 +820,46 @@ struct SessionFeature {
         }
     }
 
+    private func createSessionEffect(agentID: String, workspacePath: String) -> Effect<Action> {
+        @Dependency(AppSessionClient.self) var appSessionClient
+        return .run { send in
+            do {
+                let snapshot = try await appSessionClient.createSession(agentID, workspacePath)
+                await send(.createSessionSucceeded(snapshot))
+            } catch {
+                await send(.createSessionFailed(AppSessionClientError(error)))
+            }
+        }
+    }
+
+    private func resolvedWorkspacePathForSession(_ path: String) -> String {
+        AppDefaultWorkspaceDirectory.resolvedURL(from: path).path
+    }
+
+    private func sendPendingInitialMessageIfReady(state: inout State) -> Effect<Action> {
+        guard let content = state.pendingInitialMessage,
+              let snapshot = state.snapshot,
+              snapshot.runtimeSessionID != nil,
+              !state.isCreatingSession,
+              !state.isStartingSession,
+              !state.isSendingMessage
+        else {
+            return .none
+        }
+
+        switch snapshot.state {
+        case .idle, .running:
+            state.pendingInitialMessage = nil
+            state.isSendingMessage = true
+            state.errorMessage = nil
+            return sendMessageEffect(content)
+        case .failed, .aborted:
+            state.messageText = content
+            state.pendingInitialMessage = nil
+            return .none
+        }
+    }
+
     private func observeSnapshotsEffect() -> Effect<Action> {
         @Dependency(AppSessionClient.self) var appSessionClient
         return .run { send in
@@ -509,5 +873,42 @@ struct SessionFeature {
             }
         }
         .cancellable(id: CancelID.snapshots, cancelInFlight: true)
+    }
+
+    private func startSessionEffect() -> Effect<Action> {
+        @Dependency(AppSessionClient.self) var appSessionClient
+        return .run { send in
+            do {
+                try await appSessionClient.startSession()
+                await send(.startSessionSucceeded)
+            } catch {
+                await send(.startSessionFailed(AppSessionClientError(error)))
+            }
+        }
+    }
+
+    private func sendMessageEffect(_ content: String) -> Effect<Action> {
+        @Dependency(AppSessionClient.self) var appSessionClient
+        return .run { send in
+            do {
+                try await appSessionClient.sendMessage(content)
+                await send(.sendMessageSucceeded)
+            } catch {
+                await send(.sendMessageFailed(AppSessionClientError(error)))
+            }
+        }
+    }
+
+    private func loadAgentsEffect() -> Effect<Action> {
+        @Dependency(AppAgentClient.self) var appAgentClient
+        return .run { send in
+            do {
+                let agents = try await appAgentClient.listAgents()
+                await send(.loadAgentsSucceeded(agents))
+            } catch {
+                await send(.loadAgentsFailed(AppAgentClientError(error)))
+            }
+        }
+        .cancellable(id: CancelID.agents, cancelInFlight: true)
     }
 }
